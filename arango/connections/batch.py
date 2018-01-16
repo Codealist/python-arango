@@ -5,13 +5,13 @@ from uuid import uuid4
 from arango.request import Request
 from arango.jobs import BatchJob, BaseJob
 from arango.utils.lock import Lock
-from arango.connections import BaseConnection
+from arango.connections import Connection
 from arango.utils import HTTP_OK
 from arango.exceptions import BatchExecuteError
 from arango.responses import BaseResponse
 
 
-class BatchExecution(BaseConnection):
+class BatchExecution(Connection):
     """ArangoDB batch request.
 
     API requests via this class are queued in memory and executed as a whole
@@ -36,7 +36,10 @@ class BatchExecution(BaseConnection):
     :type submit_timeout: int
     """
 
-    def __init__(self, connection, return_result=True, commit_on_error=False,
+    def __init__(self,
+                 connection,
+                 return_result=True,
+                 commit_on_error=False,
                  submit_timeout=-1):
         super(BatchExecution, self).__init__(
             protocol=connection.protocol,
@@ -188,8 +191,8 @@ class BatchExecution(BaseConnection):
                     else:
                         job.update('error', response)
 
-            BaseConnection.handle_request(self, batch_request, handler,
-                                          job_class=BaseJob)\
+            Connection.handle_request(self, batch_request, handler,
+                                      job_class=BaseJob)\
                 .result(raise_errors=True)
 
             return self._batch_jobs

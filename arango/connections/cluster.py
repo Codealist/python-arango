@@ -1,9 +1,9 @@
 from __future__ import absolute_import, unicode_literals
 
-from arango.connections.base import BaseConnection
+from arango.connections.base import Connection
 
 
-class ClusterTest(BaseConnection):
+class ClusterTest(Connection):
     """ArangoDB cluster round-trip test for sharding.
 
     :param connection: ArangoDB database connection
@@ -76,4 +76,4 @@ class ClusterTest(BaseConnection):
         if self._sync is True:
             request.headers['X-Synchronous-Mode'] = 'true'
 
-        return BaseConnection.handle_request(self, request, handler)
+        return Connection.handle_request(self, request, handler)

@@ -1,41 +1,37 @@
 from arango.exceptions import ArangoError
 
 
-class UserError(ArangoError):
-    """Base class for errors in User queries"""
-
-
-class UserListError(UserError):
+class UserListError(ArangoError):
     """Failed to retrieve the users."""
 
 
-class UserGetError(UserError):
+class UserGetError(ArangoError):
     """Failed to retrieve the user."""
 
 
-class UserCreateError(UserError):
+class UserCreateError(ArangoError):
     """Failed to create the user."""
 
 
-class UserUpdateError(UserError):
+class UserUpdateError(ArangoError):
     """Failed to update the user."""
 
 
-class UserReplaceError(UserError):
+class UserReplaceError(ArangoError):
     """Failed to replace the user."""
 
 
-class UserDeleteError(UserError):
+class UserDeleteError(ArangoError):
     """Failed to delete the user."""
 
 
-class UserAccessError(UserError):
+class UserAccessError(ArangoError):
     """Failed to retrieve the names of databases user can access."""
 
 
-class UserGrantAccessError(UserError):
+class UserGrantAccessError(ArangoError):
     """Failed to grant user access to a database."""
 
 
-class UserRevokeAccessError(UserError):
+class UserRevokeAccessError(ArangoError):
     """Failed to revoke user access to a database."""

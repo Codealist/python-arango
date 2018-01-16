@@ -542,9 +542,7 @@ class BaseCollection(APIWrapper):
 
         return self.handle_request(request, handler)
 
-    def all(self,
-            skip=None,
-            limit=None):
+    def all(self, skip=None, limit=None):
         """Return all documents in the collection using a server cursor.
 
         :param skip: the number of documents to skip

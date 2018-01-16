@@ -1,73 +1,69 @@
 from arango.exceptions import ArangoError
 
 
-class ServerError(ArangoError):
-    """Base class for Server errors"""
-
-
-class ServerConnectionError(ServerError):
+class ServerConnectionError(ArangoError):
     """Failed to connect to the ArangoDB instance."""
 
 
-class ServerEndpointsError(ServerError):
+class ServerEndpointsError(ArangoError):
     """Failed to retrieve the ArangoDB server endpoints."""
 
 
-class ServerVersionError(ServerError):
+class ServerVersionError(ArangoError):
     """Failed to retrieve the ArangoDB server version."""
 
 
-class ServerDetailsError(ServerError):
+class ServerDetailsError(ArangoError):
     """Failed to retrieve the ArangoDB server details."""
 
 
-class ServerTimeError(ServerError):
+class ServerTimeError(ArangoError):
     """Failed to return the current ArangoDB system time."""
 
 
-class ServerEchoError(ServerError):
+class ServerEchoError(ArangoError):
     """Failed to return the last request."""
 
 
-class ServerSleepError(ServerError):
+class ServerSleepError(ArangoError):
     """Failed to suspend the ArangoDB server."""
 
 
-class ServerShutdownError(ServerError):
+class ServerShutdownError(ArangoError):
     """Failed to initiate a clean shutdown sequence."""
 
 
-class ServerRunTestsError(ServerError):
+class ServerRunTestsError(ArangoError):
     """Failed to execute the specified tests on the server."""
 
 
-class ServerExecuteError(ServerError):
+class ServerExecuteError(ArangoError):
     """Failed to execute a the given Javascript program on the server."""
 
 
-class ServerRequiredDBVersionError(ServerError):
+class ServerRequiredDBVersionError(ArangoError):
     """Failed to retrieve the required database version."""
 
 
-class ServerReadLogError(ServerError):
+class ServerReadLogError(ArangoError):
     """Failed to retrieve the global log."""
 
 
-class ServerLogLevelError(ServerError):
+class ServerLogLevelError(ArangoError):
     """Failed to return the log level."""
 
 
-class ServerLogLevelSetError(ServerError):
+class ServerLogLevelSetError(ArangoError):
     """Failed to set the log level."""
 
 
-class ServerReloadRoutingError(ServerError):
+class ServerReloadRoutingError(ArangoError):
     """Failed to reload the routing information."""
 
 
-class ServerStatisticsError(ServerError):
+class ServerStatisticsError(ArangoError):
     """Failed to retrieve the server statistics."""
 
 
-class ServerRoleError(ServerError):
+class ServerRoleError(ArangoError):
     """Failed to retrieve the role of the server in a cluster."""

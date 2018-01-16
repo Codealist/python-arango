@@ -1,13 +1,9 @@
 from arango.exceptions import ArangoError
 
 
-class CursorError(ArangoError):
-    """Base class for errors in Cursor queries"""
-
-
-class CursorNextError(CursorError):
+class CursorNextError(ArangoError):
     """Failed to retrieve the next cursor result."""
 
 
-class CursorCloseError(CursorError):
+class CursorCloseError(ArangoError):
     """Failed to delete the cursor from the server."""

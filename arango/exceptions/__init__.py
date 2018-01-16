@@ -1,6 +1,6 @@
-from arango.exceptions.base import ArangoError
 from arango.exceptions.aql import *
 from arango.exceptions.async import *
+from arango.exceptions.base import ArangoError
 from arango.exceptions.batch import *
 from arango.exceptions.collection import *
 from arango.exceptions.cursor import *

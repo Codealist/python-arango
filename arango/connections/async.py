@@ -1,10 +1,10 @@
 from __future__ import absolute_import, unicode_literals
 
 from arango.jobs import AsyncJob
-from arango.connections import BaseConnection
+from arango.connections import Connection
 
 
-class AsyncExecution(BaseConnection):
+class AsyncExecution(Connection):
     """ArangoDB asynchronous execution.
 
     API requests via this class are placed in a server-side in-memory task
@@ -63,4 +63,4 @@ class AsyncExecution(BaseConnection):
         kwargs['connection'] = self._parent
         kwargs['return_result'] = self._return_result
 
-        return BaseConnection.handle_request(self, request, handler, **kwargs)
+        return Connection.handle_request(self, request, handler, **kwargs)

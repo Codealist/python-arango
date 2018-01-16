@@ -9,7 +9,7 @@ from arango.connections import (
     ClusterTest,
     Transaction
 )
-from arango.connections import BaseConnection
+from arango.connections import Connection
 from arango.collections import Collection
 from arango.utils import HTTP_OK
 from arango.exceptions import (
@@ -58,7 +58,8 @@ from arango.exceptions import (
     UserReplaceError,
     UserUpdateError,
 )
-from arango.wrappers import Graph, AQL
+from arango.aql import AQL
+from arango.graph import Graph
 from arango import APIWrapper
 from arango import WriteAheadLog
 
@@ -224,7 +225,7 @@ class Database(APIWrapper):
         if password is None:
             password = self.password
 
-        return Database(BaseConnection(
+        return Database(Connection(
             protocol=self.protocol,
             host=self.host,
             port=self.port,

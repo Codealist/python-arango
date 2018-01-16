@@ -1,41 +1,37 @@
-from arango.exceptions import ArangoError
+from arango.exceptions.base import ArangoError
 
 
-class AQLError(ArangoError):
-    """Base class for errors in AQL queries"""
-
-
-class AQLQueryExplainError(AQLError):
+class AQLQueryExplainError(ArangoError):
     """Failed to explain the AQL query."""
 
 
-class AQLQueryValidateError(AQLError):
+class AQLQueryValidateError(ArangoError):
     """Failed to validate the AQL query."""
 
 
-class AQLQueryExecuteError(AQLError):
+class AQLQueryExecuteError(ArangoError):
     """Failed to execute the AQL query."""
 
 
-class AQLCacheClearError(AQLError):
+class AQLCacheClearError(ArangoError):
     """Failed to clear the AQL query cache."""
 
 
-class AQLCachePropertiesError(AQLError):
+class AQLCachePropertiesError(ArangoError):
     """Failed to retrieve the AQL query cache properties."""
 
 
-class AQLCacheConfigureError(AQLError):
+class AQLCacheConfigureError(ArangoError):
     """Failed to configure the AQL query cache properties."""
 
 
-class AQLFunctionListError(AQLError):
+class AQLFunctionListError(ArangoError):
     """Failed to retrieve the list of AQL user functions."""
 
 
-class AQLFunctionCreateError(AQLError):
+class AQLFunctionCreateError(ArangoError):
     """Failed to create the AQL user function."""
 
 
-class AQLFunctionDeleteError(AQLError):
+class AQLFunctionDeleteError(ArangoError):
     """Failed to delete the AQL user function."""

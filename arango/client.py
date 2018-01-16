@@ -1,5 +1,5 @@
 from arango.http_clients import DefaultHTTPClient
-from arango.connections import BaseConnection
+from arango.connections import Connection
 from arango import Request
 from arango.utils import HTTP_OK
 from arango.database import Database
@@ -61,7 +61,7 @@ class ArangoClient(Database):
                 check_cert=check_cert
             )
 
-        conn = BaseConnection(
+        conn = Connection(
             protocol=protocol,
             host=host,
             port=port,

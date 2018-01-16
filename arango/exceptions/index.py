@@ -1,17 +1,13 @@
 from arango.exceptions import ArangoError
 
 
-class IndexError(ArangoError):
-    """Base class for errors in Index queries"""
-
-
-class IndexListError(IndexError):
+class IndexListError(ArangoError):
     """Failed to retrieve the list of indexes in the collection."""
 
 
-class IndexCreateError(IndexError):
+class IndexCreateError(ArangoError):
     """Failed to create the index in the collection."""
 
 
-class IndexDeleteError(IndexError):
+class IndexDeleteError(ArangoError):
     """Failed to delete the index from the collection."""

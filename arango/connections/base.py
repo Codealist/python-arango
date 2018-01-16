@@ -5,11 +5,12 @@ import logging
 from arango.jobs import BaseJob, SynchronousResultJob
 from arango.http_clients import DefaultHTTPClient
 from arango.utils import sanitize, fix_params
-from arango.wrappers import AQL, Graph
+from arango.aql import AQL
+from arango.graph import Graph
 from arango.collections import Collection
 
 
-class BaseConnection(object):
+class Connection(object):
     """ArangoDB database connection.
 
     :param protocol: the internet transfer protocol (default: ``"http"``)

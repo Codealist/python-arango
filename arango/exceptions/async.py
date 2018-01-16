@@ -1,29 +1,25 @@
 from arango.exceptions import ArangoError
 
 
-class AsyncError(ArangoError):
-    """Base class for errors in Async queries"""
-
-
-class AsyncExecuteError(AsyncError):
+class AsyncExecuteError(ArangoError):
     """Failed to execute the asynchronous request."""
 
 
-class AsyncJobListError(AsyncError):
+class AsyncJobListError(ArangoError):
     """Failed to list the IDs of the asynchronous jobs."""
 
 
-class AsyncJobCancelError(AsyncError):
+class AsyncJobCancelError(ArangoError):
     """Failed to cancel the asynchronous job."""
 
 
-class AsyncJobStatusError(AsyncError):
+class AsyncJobStatusError(ArangoError):
     """Failed to retrieve the asynchronous job result from the server."""
 
 
-class AsyncJobResultError(AsyncError):
+class AsyncJobResultError(ArangoError):
     """Failed to pop the asynchronous job result from the server."""
 
 
-class AsyncJobClearError(AsyncError):
+class AsyncJobClearError(ArangoError):
     """Failed to delete the asynchronous job result from the server."""

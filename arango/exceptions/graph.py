@@ -1,61 +1,57 @@
 from arango.exceptions import ArangoError
 
 
-class GraphError(ArangoError):
-    """Base class for errors in Graph queries"""
-
-
-class GraphListError(GraphError):
+class GraphListError(ArangoError):
     """Failed to retrieve the list of graphs."""
 
 
-class GraphGetError(GraphError):
+class GraphGetError(ArangoError):
     """Failed to retrieve the graph."""
 
 
-class GraphCreateError(GraphError):
+class GraphCreateError(ArangoError):
     """Failed to create the graph."""
 
 
-class GraphDeleteError(GraphError):
+class GraphDeleteError(ArangoError):
     """Failed to delete the graph."""
 
 
-class GraphPropertiesError(GraphError):
+class GraphPropertiesError(ArangoError):
     """Failed to retrieve the graph properties."""
 
 
-class GraphTraverseError(GraphError):
+class GraphTraverseError(ArangoError):
     """Failed to execute the graph traversal."""
 
 
-class OrphanCollectionListError(GraphError):
+class OrphanCollectionListError(ArangoError):
     """Failed to retrieve the list of orphaned vertex collections."""
 
 
-class VertexCollectionListError(GraphError):
+class VertexCollectionListError(ArangoError):
     """Failed to retrieve the list of vertex collections."""
 
 
-class VertexCollectionCreateError(GraphError):
+class VertexCollectionCreateError(ArangoError):
     """Failed to create the vertex collection."""
 
 
-class VertexCollectionDeleteError(GraphError):
+class VertexCollectionDeleteError(ArangoError):
     """Failed to delete the vertex collection."""
 
 
-class EdgeDefinitionListError(GraphError):
+class EdgeDefinitionListError(ArangoError):
     """Failed to retrieve the list of edge definitions."""
 
 
-class EdgeDefinitionCreateError(GraphError):
+class EdgeDefinitionCreateError(ArangoError):
     """Failed to create the edge definition."""
 
 
-class EdgeDefinitionReplaceError(GraphError):
+class EdgeDefinitionReplaceError(ArangoError):
     """Failed to replace the edge definition."""
 
 
-class EdgeDefinitionDeleteError(GraphError):
+class EdgeDefinitionDeleteError(ArangoError):
     """Failed to delete the edge definition."""

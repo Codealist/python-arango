@@ -1,21 +1,17 @@
 from arango.exceptions import ArangoError
 
 
-class DatabaseError(ArangoError):
-    """Base class for errors in Database queries"""
-
-
-class DatabaseListError(DatabaseError):
+class DatabaseListError(ArangoError):
     """Failed to retrieve the list of databases."""
 
 
-class DatabasePropertiesError(DatabaseError):
+class DatabasePropertiesError(ArangoError):
     """Failed to retrieve the database options."""
 
 
-class DatabaseCreateError(DatabaseError):
+class DatabaseCreateError(ArangoError):
     """Failed to create the database."""
 
 
-class DatabaseDeleteError(DatabaseError):
+class DatabaseDeleteError(ArangoError):
     """Failed to delete the database."""

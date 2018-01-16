@@ -1,21 +1,17 @@
 from arango.exceptions import ArangoError
 
 
-class WALError(ArangoError):
-    """Base class for errors in WAL queries"""
-
-
-class WALPropertiesError(WALError):
+class WALPropertiesError(ArangoError):
     """Failed to retrieve the write-ahead log."""
 
 
-class WALConfigureError(WALError):
+class WALConfigureError(ArangoError):
     """Failed to configure the write-ahead log."""
 
 
-class WALTransactionListError(WALError):
+class WALTransactionListError(ArangoError):
     """Failed to retrieve the list of running transactions."""
 
 
-class WALFlushError(WALError):
+class WALFlushError(ArangoError):
     """Failed to flush the write-ahead log."""

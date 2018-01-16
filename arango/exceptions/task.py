@@ -1,21 +1,17 @@
 from arango.exceptions import ArangoError
 
 
-class TaskError(ArangoError):
-    """Base class for errors in Task queries"""
-
-
-class TaskListError(TaskError):
+class TaskListError(ArangoError):
     """Failed to list the active server tasks."""
 
 
-class TaskGetError(TaskError):
+class TaskGetError(ArangoError):
     """Failed to retrieve the active server task."""
 
 
-class TaskCreateError(TaskError):
+class TaskCreateError(ArangoError):
     """Failed to create a server task."""
 
 
-class TaskDeleteError(TaskError):
+class TaskDeleteError(ArangoError):
     """Failed to delete a server task."""

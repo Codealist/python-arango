@@ -1,61 +1,57 @@
 from arango.exceptions import ArangoError
 
 
-class CollectionError(ArangoError):
-    """Base class for errors in Collection queries"""
-
-
-class CollectionListError(CollectionError):
+class CollectionListError(ArangoError):
     """Failed to retrieve the list of collections."""
 
 
-class CollectionPropertiesError(CollectionError):
+class CollectionPropertiesError(ArangoError):
     """Failed to retrieve the collection properties."""
 
 
-class CollectionConfigureError(CollectionError):
+class CollectionConfigureError(ArangoError):
     """Failed to configure the collection properties."""
 
 
-class CollectionStatisticsError(CollectionError):
+class CollectionStatisticsError(ArangoError):
     """Failed to retrieve the collection statistics."""
 
 
-class CollectionRevisionError(CollectionError):
+class CollectionRevisionError(ArangoError):
     """Failed to retrieve the collection revision."""
 
 
-class CollectionChecksumError(CollectionError):
+class CollectionChecksumError(ArangoError):
     """Failed to retrieve the collection checksum."""
 
 
-class CollectionCreateError(CollectionError):
+class CollectionCreateError(ArangoError):
     """Failed to create the collection."""
 
 
-class CollectionDeleteError(CollectionError):
+class CollectionDeleteError(ArangoError):
     """Failed to delete the collection"""
 
 
-class CollectionRenameError(CollectionError):
+class CollectionRenameError(ArangoError):
     """Failed to rename the collection."""
 
 
-class CollectionTruncateError(CollectionError):
+class CollectionTruncateError(ArangoError):
     """Failed to truncate the collection."""
 
 
-class CollectionLoadError(CollectionError):
+class CollectionLoadError(ArangoError):
     """Failed to load the collection into memory."""
 
 
-class CollectionUnloadError(CollectionError):
+class CollectionUnloadError(ArangoError):
     """Failed to unload the collection from memory."""
 
 
-class CollectionRotateJournalError(CollectionError):
+class CollectionRotateJournalError(ArangoError):
     """Failed to rotate the journal of the collection."""
 
 
-class CollectionBadStatusError(CollectionError):
+class CollectionBadStatusError(ArangoError):
     """Unknown status was returned from the collection."""

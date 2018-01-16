@@ -14,7 +14,7 @@ class Cursor(APIWrapper):
     """ArangoDB cursor which returns documents from the server in batches.
 
     :param connection: ArangoDB database connection
-    :type connection: arango.connections.BaseConnection
+    :type connection: arango.connections.Connection
     :param init_data: the cursor initialization data
     :type init_data: dict
     :param cursor_type: One of `"cursor"` or `"export"`, which endpoint to use

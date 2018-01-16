@@ -3,13 +3,13 @@ from __future__ import absolute_import, unicode_literals
 from uuid import uuid4
 from collections import deque
 
-from arango.connections import BaseConnection
+from arango.connections import Connection
 from arango import Request
 from arango.utils import HTTP_OK
 from arango.exceptions import TransactionError
 
 
-class Transaction(BaseConnection):
+class Transaction(Connection):
     """ArangoDB transaction object.
 
     API requests made in a transaction are queued in memory and executed as a

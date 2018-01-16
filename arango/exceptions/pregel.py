@@ -1,17 +1,13 @@
 from arango.exceptions import ArangoError
 
 
-class PregelError(ArangoError):
-    """Base class for errors in Pregel queries"""
-
-
-class PregelJobCreateError(PregelError):
+class PregelJobCreateError(ArangoError):
     """Failed to start/create a Pregel job."""
 
 
-class PregelJobGetError(PregelError):
+class PregelJobGetError(ArangoError):
     """Failed to retrieve a Pregel job."""
 
 
-class PregelJobDeleteError(PregelError):
+class PregelJobDeleteError(ArangoError):
     """Failed to cancel/delete a Pregel job."""

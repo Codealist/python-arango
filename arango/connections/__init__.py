@@ -1,4 +1,4 @@
-from arango.connections.base import BaseConnection
+from arango.connections.base import Connection
 
 from arango.connections.async import AsyncExecution
 from arango.connections.batch import BatchExecution
