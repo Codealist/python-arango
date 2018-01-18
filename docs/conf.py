@@ -96,16 +96,16 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 #
 # default_role = None
 
-# If true, '()' will be appended to :func: etc. cross-reference text.
+# If set to True, '()' will be appended to :func: etc. cross-reference text.
 #
 # add_function_parentheses = True
 
-# If true, the current module name will be prepended to all description
+# If set to True, the current module name will be prepended to all description
 # unit titles (such as .. function::).
 #
 # add_module_names = True
 
-# If true, sectionauthor and moduleauthor directives will be shown in the
+# If set to True, sectionauthor and moduleauthor directives will be shown in the
 # output. They are ignored by default.
 #
 show_authors = True
@@ -116,10 +116,10 @@ pygments_style = 'sphinx'
 # A list of ignored prefixes for module index sorting.
 # modindex_common_prefix = []
 
-# If true, keep warnings as "system message" paragraphs in the built documents.
+# If set to True, keep warnings as "system message" paragraphs in the built documents.
 # keep_warnings = False
 
-# If true, `todo` and `todoList` produce output, else they produce nothing.
+# If set to True, `todo` and `todoList` produce output, else they produce nothing.
 todo_include_todos = False
 
 
@@ -176,7 +176,7 @@ html_static_path = ['static']
 #
 # html_last_updated_fmt = None
 
-# If true, SmartyPants will be used to convert quotes and dashes to
+# If set to True, SmartyPants will be used to convert quotes and dashes to
 # typographically correct entities.
 #
 # html_use_smartypants = True
@@ -198,23 +198,23 @@ html_static_path = ['static']
 #
 # html_use_index = True
 
-# If true, the index is split into individual pages for each letter.
+# If set to True, the index is split into individual pages for each letter.
 #
 # html_split_index = False
 
-# If true, links to the reST sources are added to the pages.
+# If set to True, links to the reST sources are added to the pages.
 #
 # html_show_sourcelink = True
 
-# If true, "Created using Sphinx" is shown in the HTML footer. Default is True.
+# If set to True, "Created using Sphinx" is shown in the HTML footer. Default is True.
 #
 # html_show_sphinx = True
 
-# If true, "(C) Copyright ..." is shown in the HTML footer. Default is True.
+# If set to True, "(C) Copyright ..." is shown in the HTML footer. Default is True.
 #
 # html_show_copyright = True
 
-# If true, an OpenSearch description file will be output, and all pages will
+# If set to True, an OpenSearch description file will be output, and all pages will
 # contain a <link> tag referring to it.  The value of this option must be the
 # base URL from which the finished HTML is served.
 #
@@ -282,11 +282,11 @@ latex_documents = [
 #
 # latex_use_parts = False
 
-# If true, show page references after internal links.
+# If set to True, show page references after internal links.
 #
 # latex_show_pagerefs = False
 
-# If true, show URL addresses after external links.
+# If set to True, show URL addresses after external links.
 #
 # latex_show_urls = False
 
@@ -314,7 +314,7 @@ man_pages = [
      [author], 1)
 ]
 
-# If true, show URL addresses after external links.
+# If set to True, show URL addresses after external links.
 #
 # man_show_urls = False
 
@@ -342,7 +342,7 @@ texinfo_documents = [
 #
 # texinfo_show_urls = 'footnote'
 
-# If true, do not generate a @detailmenu in the "Top" node's menu.
+# If set to True, do not generate a @detailmenu in the "Top" node's menu.
 #
 # texinfo_no_detailmenu = False
 

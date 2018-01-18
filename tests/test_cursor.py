@@ -37,7 +37,7 @@ def test_read_cursor_init():
     global cursor, cursor_id
 
     col.import_bulk([doc1, doc2, doc3, doc4])
-    cursor = db.aql.execute(
+    cursor = db.aql._execute_request(
         'FOR d IN {} RETURN d'.format(col_name),
         count=True,
         batch_size=2,
@@ -143,7 +143,7 @@ def test_read_cursor_early_finish():
 
     col.truncate()
     col.import_bulk([doc1, doc2, doc3, doc4])
-    cursor = db.aql.execute(
+    cursor = db.aql._execute_request(
         'FOR d IN {} RETURN d'.format(col_name),
         count=True,
         batch_size=2,
@@ -162,7 +162,7 @@ def test_write_cursor_init():
     global cursor, cursor_id
     col.truncate()
     col.import_bulk([doc1, doc2, doc3])
-    cursor = db.aql.execute(
+    cursor = db.aql._execute_request(
         '''
         FOR d IN {col} FILTER d._key == @first OR d._key == @second
         UPDATE {{_key: d._key, _val: @val }} IN {col}
@@ -237,7 +237,7 @@ def test_write_cursor_early_finish():
     global cursor, cursor_id
     col.truncate()
     col.import_bulk([doc1, doc2, doc3])
-    cursor = db.aql.execute(
+    cursor = db.aql._execute_request(
         '''
         FOR d IN {col} FILTER d._key == @first OR d._key == @second
         UPDATE {{_key: d._key, _val: @val }} IN {col}
@@ -257,7 +257,7 @@ def test_write_cursor_early_finish():
     col.truncate()
     col.import_bulk([doc1, doc2, doc3, doc4])
 
-    cursor = db.aql.execute(
+    cursor = db.aql._execute_request(
         'FOR d IN {} RETURN d'.format(col_name),
         count=False,
         batch_size=1,
@@ -273,7 +273,7 @@ def test_cursor_context_manager():
     col.truncate()
     col.import_bulk([doc1, doc2, doc3])
 
-    with db.aql.execute(
+    with db.aql._execute_request(
         'FOR d IN {} RETURN d'.format(col_name),
         count=False,
         batch_size=2,
@@ -284,7 +284,7 @@ def test_cursor_context_manager():
     with pytest.raises(CursorCloseError):
         cursor.close(ignore_missing=False)
 
-    with db.aql.execute(
+    with db.aql._execute_request(
         'FOR d IN {} RETURN d'.format(col_name),
         count=False,
         batch_size=2,
@@ -301,7 +301,7 @@ def test_cursor_context_manager():
 def test_cursor_repr_no_id():
     col.truncate()
     col.import_bulk([doc1, doc2, doc3, doc4])
-    cursor = db.aql.execute(
+    cursor = db.aql._execute_request(
         'FOR d IN {} RETURN d'.format(col_name),
         count=True,
         batch_size=2,

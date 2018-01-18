@@ -21,7 +21,7 @@ def start_event_loop(loop, request_queue, session_args):  # pragma: no cover
     :param request_queue: The queue of tuples containing
     :class:`arango.request.Request` and :class:`asyncio.Queue`
     :type request_queue: asyncio.Queue
-    :param kwargs: the arguments to pass to the session instance
+    :param kwargs: The arguments to pass to the session instance
     :type kwargs: dict
     """
     asyncio.set_event_loop(loop)
@@ -35,7 +35,7 @@ async def session_create(request_queue, **kwargs):
 
     :param request_queue: The queue of :class:`arango.request.Request`
     :type request_queue: asyncio.Queue
-    :param kwargs: the arguments to pass to the session instance
+    :param kwargs: The arguments to pass to the session instance
     :type kwargs: dict
     """
 
@@ -70,9 +70,9 @@ async def make_async_request(request, request_queue, event_loop):
     # pragma: no cover
     """Asynchronously make a request using `aiohttp` library
 
-    :param request: the request to make
+    :param request: The request to make
     :type request: arango.request.Request
-    :param request_queue: the request queue to submit to
+    :param request_queue: The request queue to submit to
     :type request_queue: asyncio.Queue
     :return: :class:`asyncio.Future` containing a tuple containing the
     response to the request and its text.
@@ -93,7 +93,7 @@ class AsyncioHTTPClient(BaseHTTPClient):  # pragma: no cover
     def __init__(self, **kwargs):
         """Initialize the client.
 
-        :param kwargs: the arguments to pass to the aiohttp session
+        :param kwargs: The arguments to pass to the aiohttp session
         :type kwargs: dict
         """
         self._event_loop = asyncio.new_event_loop()
@@ -143,7 +143,6 @@ class AsyncioHTTPClient(BaseHTTPClient):  # pragma: no cover
         :return: The lazy loading response to this request
         :rtype: arango.responses.LazyResponse
         """
-
         if response_mapper is None:
             response_mapper = self.response_mapper
 

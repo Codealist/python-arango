@@ -1496,26 +1496,27 @@ def test_find_by_text():
     col.import_bulk(test_docs)
 
     # Test find_by_text with default options
-    result = col.find_by_text(key='text', query='bar,|baz')
+    result = col.find_by_text(field='text', query='bar,|baz')
+    print(list(result))
     assert clean_keys(list(result)) == [doc2, doc3]
 
     # Test find_by_text with limit
-    result = col.find_by_text(key='text', query='foo', limit=1)
+    result = col.find_by_text(field='text', query='foo', limit=1)
     assert len(list(result)) == 1
-    result = col.find_by_text(key='text', query='foo', limit=2)
+    result = col.find_by_text(field='text', query='foo', limit=2)
     assert len(list(result)) == 2
-    result = col.find_by_text(key='text', query='foo', limit=3)
+    result = col.find_by_text(field='text', query='foo', limit=3)
     assert len(list(result)) == 3
 
     # Test find_by_text with invalid queries
     with pytest.raises(DocumentGetError):
-        col.find_by_text(key='text', query='+')
+        col.find_by_text(field='text', query='+')
     with pytest.raises(DocumentGetError):
-        col.find_by_text(key='text', query='|')
+        col.find_by_text(field='text', query='|')
 
     # Test find_by_text with missing column
     with pytest.raises(DocumentGetError):
-        col.find_by_text(key='missing', query='foo')
+        col.find_by_text(field='missing', query='foo')
 
 
 def test_import_bulk():

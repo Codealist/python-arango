@@ -1,19 +1,19 @@
 from __future__ import absolute_import, unicode_literals
 
-from six import string_types as string
+from six import string_types
 
-from arango.responses import BaseResponse
+from arango.responses import Response
 
 
 class ArangoError(Exception):
     """Base class for all ArangoDB exceptions.
 
-    :param data: the response object or string
+    :param data: The response object or string.
     :type data: arango.response.Response | str | unicode
     """
 
     def __init__(self, data, message=None):
-        if isinstance(data, BaseResponse):
+        if isinstance(data, Response):
             # Get the ArangoDB error message if provided
             if message is not None:
                 error_message = message
@@ -46,7 +46,7 @@ class ArangoError(Exception):
             self.url = data.url
             self.http_code = data.status_code
             self.http_headers = data.headers
-        elif isinstance(data, string):
+        elif isinstance(data, string_types):
             super(ArangoError, self).__init__(data)
             self.message = data
             self.error_code = None

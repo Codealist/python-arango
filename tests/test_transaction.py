@@ -52,7 +52,7 @@ def test_init():
 
 def test_execute_without_params():
     txn = db.transaction(write=col_name)
-    result = txn.execute(
+    result = txn._execute_request(
         command='''
         function () {{
             var db = require('internal').db;
@@ -71,7 +71,7 @@ def test_execute_without_params():
 
 def test_execute_with_params():
     txn = db.transaction(write=col_name)
-    result = txn.execute(
+    result = txn._execute_request(
         command='''
         function (params) {{
             var db = require('internal').db;
@@ -90,7 +90,7 @@ def test_execute_with_errors():
     txn = db.transaction(write=col_name)
     bad_col_name = generate_col_name()
     with pytest.raises(TransactionError):
-        txn.execute(
+        txn._execute_request(
             command='''
                 function (params) {{
                 var db = require('internal').db;

@@ -4,9 +4,9 @@ Indexes
 -------
 
 **Indexes** can be added to collections to speed up document lookups. Every
-collection has a primary hash index on the ``"_key"`` field by default. This
+collection has a primary hash index on the "_key" field by default. This
 index cannot be deleted or modified. Every edge collection has additional edge
-index on fields ``"_from"`` and ``"_to"``.
+index on fields "_from" and "_to".
 
 Here is an example showing how indexes can be added or removed:
 

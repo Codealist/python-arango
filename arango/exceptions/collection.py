@@ -30,7 +30,7 @@ class CollectionCreateError(ArangoError):
 
 
 class CollectionDeleteError(ArangoError):
-    """Failed to delete the collection"""
+    """Failed to delete the collection."""
 
 
 class CollectionRenameError(ArangoError):

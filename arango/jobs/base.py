@@ -9,7 +9,12 @@ class BaseJob(object):
     A job tracks the status of an API request and its result.
     """
 
-    def __init__(self, handler, response=None, job_id=None, assign_id=False, job_type='base'):
+    def __init__(self,
+                 handler,
+                 response=None,
+                 job_id=None,
+                 assign_id=False,
+                 job_type='base'):
         if job_id is None and assign_id:
             job_id = uuid4().hex
 
@@ -27,7 +32,7 @@ class BaseJob(object):
     def id(self):
         """Return the UUID of the job.
 
-        :return: the UUID of the job
+        :return: The UUID of the job
         :rtype: str | unicode
         """
         return self._job_id
@@ -37,10 +42,10 @@ class BaseJob(object):
 
         This method designed to be used internally only.
 
-        :param status: the status of the job
+        :param status: The status of the job
         :type status: str
-        :param response: the response to the job
-        :type response: arango.responses.base.BaseResponse
+        :param response: The response to the job
+        :type response: arango.responses.base.Response
         """
 
         self._status = status
@@ -51,9 +56,9 @@ class BaseJob(object):
     def status(self):
         """Return the status of the job.
 
-        :returns: the batch job status, which can be ``"pending"`` (the job is
-            still waiting to be committed), ``"done"`` (the job completed) or
-            ``"error"`` (the job raised an exception)
+        :return: The batch job status, which can be "pending" (the job is
+            still waiting to be committed), "done" (the job completed) or
+            "error" (the job raised an exception)
         :rtype: str | unicode
         """
         return self._status
@@ -63,7 +68,7 @@ class BaseJob(object):
 
         :param raise_errors: whether to raise this result if it is an error
         :type raise_errors: bool
-        :returns: the result of the batch job if the job is successful
+        :return: The result of the batch job if the job is successful
         :rtype: object
         """
         if self._response is None:

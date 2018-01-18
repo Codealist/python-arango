@@ -1,8 +1,8 @@
 from __future__ import absolute_import, unicode_literals
 
-from arango import Request
 from arango import APIWrapper
-from arango.cursors import Cursor, ExportCursor
+from arango import Request
+from arango.cursor import Cursor, ExportCursor
 from arango.exceptions import (
     CollectionBadStatusError,
     CollectionChecksumError,
@@ -26,16 +26,15 @@ from arango.exceptions import (
     UserGrantAccessError
 )
 from arango.utils import HTTP_OK
-from arango.jobs import BaseJob
 
 
 class BaseCollection(APIWrapper):
-    """Base ArangoDB collection.
+    """Base for ArangoDB collection classes.
 
-    :param connection: ArangoDB connection object
-    :type connection: arango.connection.Connection
-    :param name: the name of the collection
-    :type name: str  | unicode
+    :param requester: ArangoDB API requester object.
+    :type requester: arango.requesters.Requester
+    :param name: The name of the collection.
+    :type name: str | unicode
     """
 
     TYPES = {
@@ -52,138 +51,106 @@ class BaseCollection(APIWrapper):
         6: 'loading'
     }
 
-    def __init__(self, connection, name):
-        super(BaseCollection, self).__init__(connection)
+    def __init__(self, requester, name):
+        super(BaseCollection, self).__init__(requester)
         self._name = name
 
     def __iter__(self):
         """Iterate through the documents in the collection.
 
-        :returns: the document cursor
+        :return: The document cursor.
         :rtype: arango.cursor.Cursor
-        :raises arango.exceptions.DocumentGetError: if the documents cannot
-            be fetched from the collection
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
         """
-
         request = Request(
             method='put',
             endpoint='/_api/simple/all',
             data={'collection': self._name}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentGetError(res)
-            return Cursor(self._conn, res.body)
+            return Cursor(self._requester, res.body)
 
-        job = self.handle_request(request, handler, job_class=BaseJob)
-
-        return job.result(raise_errors=True)
+        return self._execute_request(request, response_handler)
 
     def __len__(self):
         """Return the number of documents in the collection.
 
-        :returns: the number of documents
+        :return: The number of documents.
         :rtype: int
-        :raises arango.exceptions.DocumentCountError: if the document
-            count cannot be retrieved
+        :raise arango.exceptions.DocumentCountError: If the count fails.
         """
-
         request = Request(
             method='get',
             endpoint='/_api/collection/{}/count'.format(self._name)
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentCountError(res)
             return res.body['count']
 
-        job = self.handle_request(request, handler, job_class=BaseJob)
-
-        return job.result(raise_errors=True)
+        return self._execute_request(request, response_handler)
 
     def __getitem__(self, key):
         """Return a document by its key from the collection.
 
-        :param key: the document key
-        :type key: str  | unicode
-        :returns: the document
+        :param key: The document key.
+        :type key: str | unicode
+        :return: The document.
         :rtype: dict
-        :raises arango.exceptions.DocumentGetError: if the document cannot
-            be fetched from the collection
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
         """
-
         request = Request(
             method='get',
             endpoint='/_api/document/{}/{}'.format(self._name, key)
         )
 
-        def handler(res):
+        def response_handler(res):
+            if res.status_code in HTTP_OK:
+                return res.body
             if res.status_code == 404 and res.error_code == 1202:
                 return None
-            elif res.status_code not in HTTP_OK:
-                raise DocumentGetError(res)
-            return res.body
+            raise DocumentGetError(res)
 
-        job = self.handle_request(request, handler, job_class=BaseJob)
+        return self._execute_request(request, response_handler)
 
-        return job.result(raise_errors=True)
-
-    def __contains__(self, key):
+    def __contains__(self, doc):
         """Check if a document exists in the collection by its key.
 
-        :param key: the document key
-        :type key: dict | str | unicode
-        :returns: whether the document exists
+        :param doc: The document or its key.
+        :type doc: dict | str | unicode
+        :return: True if the document exists, False otherwise.
         :rtype: bool
-        :raises arango.exceptions.DocumentInError: if the check cannot
-            be executed
+        :raise arango.exceptions.DocumentInError: If the check fails.
         """
-
-        request = Request(
-            method='get',
-            endpoint='/_api/document/{}/{}'.format(self._name, key)
-        )
-
-        def handler(res):
-            if res.status_code not in HTTP_OK:
-                if res.status_code == 404 and res.error_code == 1202:
-                    return False
-
-                raise DocumentInError(res)
-
-            return True
-
-        job = self.handle_request(request, handler, job_class=BaseJob)
-
-        return job.result(raise_errors=True)
+        return self.has(doc)
 
     def _status(self, code):
         """Return the collection status text.
 
-        :param code: the collection status code
+        :param code: The collection status code.
         :type code: int
-        :returns: the collection status text or ``None``
-        :rtype: str  | unicode | None
-        :raises arango.exceptions.CollectionBadStatusError: if the collection
-            status code is unknown
+        :return: The collection status text or None.
+        :rtype: str | unicode
+        :raise arango.exceptions.CollectionBadStatusError: On unknown status.
         """
         if code is None:  # pragma: no cover
             return None
         try:
             return self.STATUSES[code]
         except KeyError:
-            raise CollectionBadStatusError(
-                'Unknown status code {}'.format(code)
-            )
+            error_message = 'Unknown status code {}'.format(code)
+            raise CollectionBadStatusError(error_message)
 
     @property
     def name(self):
         """Return the name of the collection.
 
-        :returns: the name of the collection
-        :rtype: str  | unicode
+        :return: The name of the collection
+        :rtype: str | unicode
         """
         return self._name
 
@@ -191,28 +158,28 @@ class BaseCollection(APIWrapper):
     def database(self):
         """Return the name of the database the collection belongs to.
 
-        :returns: The name of the database.
+        :return: The name of the database.
         :rtype: str | unicode
         """
-        return self._conn.database
+        return self._requester.database
 
     def rename(self, new_name):
         """Rename the collection.
 
-        :param new_name: the new name for the collection
-        :type new_name: str  | unicode
-        :returns: the new collection details
+        :param new_name: The new name for the collection.
+        :type new_name: str | unicode
+        :return: The new collection details.
         :rtype: dict
-        :raises arango.exceptions.CollectionRenameError: if the collection
-            name cannot be changed
+        :raise arango.exceptions.CollectionRenameError: If the rename fails.
         """
+        # TODO disallow async or batch execution here
         request = Request(
             method='put',
             endpoint='/_api/collection/{}/rename'.format(self._name),
             data={'name': new_name}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise CollectionRenameError(res)
             self._name = new_name
@@ -224,22 +191,22 @@ class BaseCollection(APIWrapper):
                 'type': self.TYPES[res.body['type']]
             }
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def statistics(self):
         """Return the collection statistics.
 
-        :returns: the collection statistics
+        :return: The collection statistics.
         :rtype: dict
-        :raises arango.exceptions.CollectionStatisticsError: if the
-            collection statistics cannot be retrieved
+        :raise arango.exceptions.CollectionStatisticsError: If the retrieval
+            fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/collection/{}/figures'.format(self._name)
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise CollectionStatisticsError(res)
             stats = res.body['figures']
@@ -252,42 +219,42 @@ class BaseCollection(APIWrapper):
             )
             return stats
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def revision(self):
         """Return the collection revision.
 
-        :returns: the collection revision
-        :rtype: str  | unicode
-        :raises arango.exceptions.CollectionRevisionError: if the
-            collection revision cannot be retrieved
+        :return: The collection revision.
+        :rtype: str | unicode
+        :raise arango.exceptions.CollectionRevisionError: If the retrieval
+            fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/collection/{}/revision'.format(self._name)
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise CollectionRevisionError(res)
             return res.body['revision']
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def properties(self):
         """Return the collection properties.
 
-        :returns: The collection properties.
+        :return: The collection properties.
         :rtype: dict
-        :raises arango.exceptions.CollectionPropertiesError: If the
-            collection properties cannot be retrieved.
+        :raise arango.exceptions.CollectionPropertiesError: If the retrieval
+            fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/collection/{}/properties'.format(self._name)
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise CollectionPropertiesError(res)
 
@@ -309,21 +276,22 @@ class BaseCollection(APIWrapper):
                 'key_offset': key_options.get('offset')
             }
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def configure(self, sync=None, journal_size=None):
         """Configure the collection properties.
 
-        Only *sync* and *journal_size* properties are configurable.
-
-        :param sync: Wait for the operation to sync to disk.
+        :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
         :param journal_size: The journal size.
         :type journal_size: int
-        :returns: the new collection properties
+        :return: The new collection properties.
         :rtype: dict
-        :raises arango.exceptions.CollectionConfigureError: if the
-            collection properties cannot be configured
+        :raise arango.exceptions.CollectionConfigureError: If the configure
+            operation fails.
+
+        .. note::
+            Only *sync* and *journal_size* are configurable properties.
         """
         data = {}
         if sync is not None:
@@ -337,7 +305,7 @@ class BaseCollection(APIWrapper):
             data=data
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise CollectionConfigureError(res)
 
@@ -359,15 +327,14 @@ class BaseCollection(APIWrapper):
                 'key_offset': key_options.get('offset')
             }
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def load(self):
         """Load the collection into memory.
 
-        :returns: the collection status
-        :rtype: str  | unicode
-        :raises arango.exceptions.CollectionLoadError: if the collection
-            cannot be loaded into memory
+        :return: The collection status.
+        :rtype: str | unicode
+        :raise arango.exceptions.CollectionLoadError: If the load fails.
         """
         request = Request(
             method='put',
@@ -375,20 +342,19 @@ class BaseCollection(APIWrapper):
             command='db.{}.load()'.format(self._name)
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise CollectionLoadError(res)
             return self._status(res.body['status'])
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def unload(self):
         """Unload the collection from memory.
 
-        :returns: the collection status
-        :rtype: str  | unicode
-        :raises arango.exceptions.CollectionUnloadError: if the collection
-            cannot be unloaded from memory
+        :return: The collection status.
+        :rtype: str | unicode
+        :raise arango.exceptions.CollectionUnloadError: If the unload fails.
         """
         request = Request(
             method='put',
@@ -396,20 +362,20 @@ class BaseCollection(APIWrapper):
             command='db.{}.unload()'.format(self._name)
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise CollectionUnloadError(res)
             return self._status(res.body['status'])
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def rotate(self):
         """Rotate the collection journal.
 
-        :returns: the result of the operation
+        :return: The result of the rotate operation.
         :rtype: dict
-        :raises arango.exceptions.CollectionRotateJournalError: if the
-            collection journal cannot be rotated
+        :raise arango.exceptions.CollectionRotateJournalError: If the rotate
+            operation fails.
         """
         request = Request(
             method='put',
@@ -417,26 +383,24 @@ class BaseCollection(APIWrapper):
             command='db.{}.rotate()'.format(self._name)
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise CollectionRotateJournalError(res)
             return res.body['result']  # pragma: no cover
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def checksum(self, with_rev=False, with_data=False):
         """Return the collection checksum.
 
-        :param with_rev: include the document revisions in the checksum
-            calculation
+        :param with_rev: Include document revisions in checksum calculations.
         :type with_rev: bool
-        :param with_data: include the document data in the checksum
-            calculation
+        :param with_data: Include document data in checksum calculations.
         :type with_data: bool
-        :returns: the collection checksum
+        :return: The collection checksum.
         :rtype: int
-        :raises arango.exceptions.CollectionChecksumError: if the
-            collection checksum cannot be retrieved
+        :raise arango.exceptions.CollectionChecksumError: If the checksum
+            operation fails.
         """
         request = Request(
             method='get',
@@ -444,20 +408,19 @@ class BaseCollection(APIWrapper):
             params={'withRevision': with_rev, 'withData': with_data}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise CollectionChecksumError(res)
             return int(res.body['checksum'])
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def truncate(self):
-        """Truncate the collection.
+        """Delete all documents in the collection.
 
-        :returns: the collection details
+        :return: The collection details.
         :rtype: dict
-        :raises arango.exceptions.CollectionTruncateError: if the collection
-            cannot be truncated
+        :raise arango.exceptions.CollectionTruncateError: If the delete fails.
         """
         request = Request(
             method='put',
@@ -465,7 +428,7 @@ class BaseCollection(APIWrapper):
             command='db.{}.truncate()'.format(self._name)
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise CollectionTruncateError(res)
             return {
@@ -476,85 +439,79 @@ class BaseCollection(APIWrapper):
                 'type': self.TYPES[res.body['type']]
             }
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def count(self):
         """Return the number of documents in the collection.
 
-        :returns: the number of documents
+        :return: The number of documents.
         :rtype: int
-        :raises arango.exceptions.DocumentCountError: if the document
-            count cannot be retrieved
+        :raise arango.exceptions.DocumentCountError: If the retrieval fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/collection/{}/count'.format(self._name)
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentCountError(res)
             return res.body['count']
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
-    def has(self, key, rev=None, match_rev=True):
+    def has(self, document, rev=None, match_rev=True):
         """Check if a document exists in the collection by its key.
 
-        :param key: the document key
-        :type key: dict | str | unicode
-        :param rev: the document revision to be compared against the revision
-            of the target document
-        :type rev: str  | unicode
-        :param match_rev: if ``True``, check if the given revision and
-            the target document's revisions are the same, otherwise check if
-            the revisions are different (this flag has an effect only when
-            **rev** is given)
+        :param document: The document or its key.
+        :type document: dict | str | unicode
+        :param rev: The expected document revision.
+        :type rev: str | unicode
+        :param match_rev: This parameter applies only when **rev** is given. If
+            set to True, ensure that the document revision matches the value of
+            **rev**. Otherwise, ensure that they do not match.
         :type match_rev: bool
-        :returns: whether the document exists
+        :return: True if the document exists, False otherwise.
         :rtype: bool
-        :raises arango.exceptions.DocumentRevisionError: if the given revision
-            does not match the revision of the retrieved document
-        :raises arango.exceptions.DocumentInError: if the check cannot
-            be executed
+        :raise arango.exceptions.DocumentRevisionError: If **rev** is given and
+            it does not match the target document revision.
+        :raise arango.exceptions.DocumentInError: If the check fails.
         """
-
         headers = {}
-
         if rev is not None:
             if match_rev:
                 headers['If-Match'] = rev
             else:
                 headers['If-None-Match'] = rev
 
+        key = document['_key'] if isinstance(document, dict) else document
+
         request = Request(
-            method='get',  # TODO async seems to freeze when using 'head'
+            method='get',
             endpoint='/_api/document/{}/{}'.format(self._name, key),
             headers=headers
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code == 404 and res.error_code == 1202:
                 return False
             elif res.status_code in HTTP_OK:
                 return True
             raise DocumentInError(res)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def all(self, skip=None, limit=None):
         """Return all documents in the collection using a server cursor.
 
-        :param skip: the number of documents to skip
+        :param skip: The number of documents to skip.
         :type skip: int
-        :param limit: the max number of documents fetched by the cursor
+        :param limit: The max number of documents fetched by the cursor.
         :type limit: int
-        :returns: the document cursor
+        :return: The document cursor.
         :rtype: arango.cursor.Cursor
-        :raises arango.exceptions.DocumentGetError: if the documents in
-            the collection cannot be retrieved
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
         """
-
         data = {'collection': self._name}
         if skip is not None:
             data['skip'] = skip
@@ -567,12 +524,12 @@ class BaseCollection(APIWrapper):
             data=data
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentGetError(res)
-            return Cursor(self._conn, res.body)
+            return Cursor(self._requester, res.body)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def export(self,
                limit=None,
@@ -585,32 +542,30 @@ class BaseCollection(APIWrapper):
                filter_type='include'):  # pragma: no cover
         """"Export all documents in the collection using a server cursor.
 
-        :param flush: flush the WAL prior to the export
+        :param flush: Flush the WAL prior to the export.
         :type flush: bool
-        :param flush_wait: the max wait time in seconds for the WAL flush
+        :param flush_wait: The max wait time in seconds for the WAL flush.
         :type flush_wait: int
-        :param count: include the document count in the server cursor
-            (default: ``False``)
+        :param count: Include the document count in the server cursor.
         :type count: bool
-        :param batch_size: the max number of documents in the batch fetched by
-            th cursor in one round trip
+        :param batch_size: The max number of documents in the batch fetched by
+            the cursor in one round trip.
         :type batch_size: int
-        :param limit: the max number of documents fetched by the cursor
+        :param limit: The max number of documents fetched by the cursor.
         :type limit: int
-        :param ttl: time-to-live for the cursor on the server
+        :param ttl: The time-to-live for the cursor on the server.
         :type ttl: int
-        :param filter_fields: list of document fields to filter by
-        :type filter_fields: list
-        :param filter_type: ``"include"`` (default) or ``"exclude"``
-        :type filter_type: str  | unicode
-        :returns: the document export cursor
+        :param filter_fields: Fields used to filter documents.
+        :type filter_fields: [str | unicode]
+        :param filter_type: Allowed values are "include" or "exclude".
+        :type filter_type: str | unicode
+        :return: The document export cursor.
         :rtype: arango.cursor.ExportCursor
-        :raises arango.exceptions.DocumentGetError: if the documents in
-            the collection cannot be exported
+        :raise arango.exceptions.DocumentGetError: If the export fails.
 
         .. note::
-            If **flush** is not set to ``True``, the documents in WAL during
-            time of the retrieval are *not* included by the server cursor
+            If **flush** is not set to True, the documents in WAL during
+            export are *not* included by the server cursor.
         """
         data = {'count': count}
         if flush is not None:  # pragma: no cover
@@ -635,26 +590,25 @@ class BaseCollection(APIWrapper):
             data=data
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentGetError(res)
-            return ExportCursor(self._conn, res.body)
+            return ExportCursor(self._requester, res.body)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def find(self, filters, offset=None, limit=None):
         """Return all documents that match the given filters.
 
-        :param filters: the document filters
+        :param filters: The document filters.
         :type filters: dict
-        :param offset: the number of documents to skip initially
+        :param offset: The number of documents to skip.
         :type offset: int
-        :param limit: the max number of documents to return
+        :param limit: The max number of documents to return.
         :type limit: int
-        :returns: the document cursor
+        :return: The document cursor.
         :rtype: arango.cursor.Cursor
-        :raises arango.exceptions.DocumentGetError: if the document
-            cannot be fetched from the collection
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
         """
         data = {'collection': self._name, 'example': filters}
         if offset is not None:
@@ -668,22 +622,21 @@ class BaseCollection(APIWrapper):
             data=data
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentGetError(res)
-            return Cursor(self._conn, res.body)
+            return Cursor(self._requester, res.body)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def get_many(self, keys):
         """Return multiple documents by their keys.
 
-        :param keys: the list of document keys
-        :type keys: list
-        :returns: the list of documents
-        :rtype: list
-        :raises arango.exceptions.DocumentGetError: if the documents
-            cannot be fetched from the collection
+        :param keys: The list of document keys.
+        :type keys: [str | unicode]
+        :return: The documents.
+        :rtype: [dict]
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
         """
         request = Request(
             method='put',
@@ -691,20 +644,19 @@ class BaseCollection(APIWrapper):
             data={'collection': self._name, 'keys': keys}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentGetError(res)
             return res.body['documents']
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def random(self):
         """Return a random document from the collection.
 
-        :returns: a random document
+        :return: A random document.
         :rtype: dict
-        :raises arango.exceptions.DocumentGetError: if the document cannot
-            be fetched from the collection
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
         """
         request = Request(
             method='put',
@@ -712,12 +664,12 @@ class BaseCollection(APIWrapper):
             data={'collection': self._name}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentGetError(res)
             return res.body['document']
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def find_near(self, latitude, longitude, limit=None):
         """Return documents near a given coordinate.
@@ -727,20 +679,18 @@ class BaseCollection(APIWrapper):
         document being the first. If there are documents of equal distance,
         they are be randomly chosen from the set until the limit is reached.
 
-        :param latitude: the latitude
+        :param latitude: The latitude.
         :type latitude: int
-        :param longitude: the longitude
+        :param longitude: The longitude.
         :type longitude: int
-        :param limit: the max number of documents to return
+        :param limit: The max number of documents to return.
         :type limit: int
-        :returns: the document cursor
+        :return: The document cursor.
         :rtype: arango.cursor.Cursor
-        :raises arango.exceptions.DocumentGetError: if the documents
-            cannot be fetched from the collection
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
 
         .. note::
-            A geo index must be defined in the collection for this method to
-            be used
+            A geo index is required to use this method.
         """
 
         if limit is None:
@@ -767,12 +717,12 @@ class BaseCollection(APIWrapper):
             data={'query': full_query, 'bindVars': bind_vars}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentGetError(res)
-            return Cursor(self._conn, res.body)
+            return Cursor(self._requester, res.body)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def find_in_range(self,
                       field,
@@ -783,26 +733,21 @@ class BaseCollection(APIWrapper):
                       inclusive=True):
         """Return documents within a given range in a random order.
 
-        :param field: the name of the field to use
-        :type field: str  | unicode
-        :param lower: the lower bound
+        :param field: The document field to use.
+        :type field: str | unicode
+        :param lower: The lower bound.
         :type lower: int
-        :param upper: the upper bound
+        :param upper: The upper bound.
         :type upper: int
-        :param offset: the number of documents to skip
+        :param offset: The number of documents to skip.
         :type offset: int
-        :param limit: the max number of documents to return
+        :param limit: The max number of documents to return.
         :type limit: int
-        :param inclusive: include the lower and upper bounds
+        :param inclusive: Include the lower and upper bounds.
         :type inclusive: bool
-        :returns: the document cursor
+        :return: The document cursor.
         :rtype: arango.cursor.Cursor
-        :raises arango.exceptions.DocumentGetError: if the documents
-            cannot be fetched from the collection
-
-        .. note::
-            A geo index must be defined in the collection for this method to
-            be used
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
         """
         if inclusive:
             full_query = """
@@ -833,33 +778,31 @@ class BaseCollection(APIWrapper):
             data={'query': full_query, 'bindVars': bind_vars}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentGetError(res)
-            return Cursor(self._conn, res.body)
+            return Cursor(self._requester, res.body)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     # TODO the WITHIN geo function does not seem to work properly
     def find_in_radius(self, latitude, longitude, radius, distance_field=None):
         """Return documents within a given radius in a random order.
 
-        :param latitude: the latitude
+        :param latitude: The latitude.
         :type latitude: int
-        :param longitude: the longitude
+        :param longitude: The longitude.
         :type longitude: int
-        :param radius: the maximum radius
+        :param radius: The maximum radius.
         :type radius: int
-        :param distance_field: the key containing the distance
-        :type distance_field: str  | unicode
-        :returns: the document cursor
+        :param distance_field: The document field containing the distance.
+        :type distance_field: str | unicode
+        :return: The document cursor.
         :rtype: arango.cursor.Cursor
-        :raises arango.exceptions.DocumentGetError: if the documents
-            cannot be fetched from the collection
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
 
         .. note::
-            A geo index must be defined in the collection for this method to
-            be used
+            A geo index is required to use this method.
         """
 
         if distance_field:
@@ -887,12 +830,12 @@ class BaseCollection(APIWrapper):
             data={'query': full_query, 'bindVars': bind_vars}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentGetError(res)
-            return Cursor(self._conn, res.body)
+            return Cursor(self._requester, res.body)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def find_in_box(self,
                     latitude1,
@@ -904,25 +847,24 @@ class BaseCollection(APIWrapper):
                     geo_field=None):
         """Return all documents in an rectangular area.
 
-        :param latitude1: the first latitude
+        :param latitude1: The first latitude.
         :type latitude1: int
-        :param longitude1: the first longitude
+        :param longitude1: The first longitude.
         :type longitude1: int
-        :param latitude2: the second latitude
+        :param latitude2: The second latitude.
         :type latitude2: int
-        :param longitude2: the second longitude
+        :param longitude2: The second longitude.
         :type longitude2: int
-        :param skip: the number of documents to skip
+        :param skip: The number of documents to skip.
         :type skip: int
-        :param limit: the max number of documents to return (if 0 is given all
-            documents are returned)
+        :param limit: The max number of documents to return. If set to 0, all
+            documents are returned.
         :type limit: int
-        :param geo_field: the field to use for geo index
-        :type geo_field: str  | unicode
-        :returns: the document cursor
+        :param geo_field: The field with the geo index.
+        :type geo_field: str | unicode
+        :return: The document cursor.
         :rtype: arango.cursor.Cursor
-        :raises arango.exceptions.DocumentGetError: if the documents
-            cannot be fetched from the collection
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
         """
         data = {
             'collection': self._name,
@@ -944,28 +886,27 @@ class BaseCollection(APIWrapper):
             data=data
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentGetError(res)
-            return Cursor(self._conn, res.body)
+            return Cursor(self._requester, res.body)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
-    def find_by_text(self, key, query, limit=None):
+    # TODO this is broken in 3.3
+    def find_by_text(self, field, query, limit=None):
         """Return documents that match the specified fulltext **query**.
 
-        :param key: the key with a fulltext index
-        :type key: str  | unicode
-        :param query: the fulltext query
-        :type query: str  | unicode
-        :param limit: the max number of documents to return
+        :param field: The document field with the fulltext index.
+        :type field: str | unicode
+        :param query: The fulltext query.
+        :type query: str | unicode
+        :param limit: The max number of documents to return.
         :type limit: int
-        :returns: the document cursor
+        :return: The document cursor.
         :rtype: arango.cursor.Cursor
-        :raises arango.exceptions.DocumentGetError: if the documents
-            cannot be fetched from the collection
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
         """
-
         if limit:
             limit_string = ', @limit'
         else:
@@ -978,7 +919,7 @@ class BaseCollection(APIWrapper):
 
         bind_vars = {
             'collection': self._name,
-            'field': key,
+            'field': field,
             'query': query
         }
         if limit is not None:
@@ -990,21 +931,19 @@ class BaseCollection(APIWrapper):
             data={'query': full_query, 'bindVars': bind_vars}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentGetError(res)
-            return Cursor(self._conn, res.body)
+            return Cursor(self._requester, res.body)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def indexes(self):
         """Return the collection indexes.
 
-        :returns: the collection indexes
+        :return: The collection indexes.
         :rtype: [dict]
-        :raises arango.exceptions.IndexListError: if the list of indexes
-            cannot be retrieved
-
+        :raise arango.exceptions.IndexListError: If the retrieval fails.
         """
         request = Request(
             method='get',
@@ -1012,7 +951,7 @@ class BaseCollection(APIWrapper):
             params={'collection': self._name}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise IndexListError(res)
 
@@ -1030,7 +969,7 @@ class BaseCollection(APIWrapper):
                 indexes.append(index)
             return indexes
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def _add_index(self, data):
         """Helper method for creating a new index."""
@@ -1041,7 +980,7 @@ class BaseCollection(APIWrapper):
             params={'collection': self._name}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise IndexCreateError(res)
             details = res.body
@@ -1060,33 +999,28 @@ class BaseCollection(APIWrapper):
                 details['new'] = details.pop('isNewlyCreated')
             return details
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def add_hash_index(self,
                        fields,
                        unique=None,
                        sparse=None,
                        deduplicate=None):
-        """Create a new hash index in the collection.
+        """Create a new hash index.
 
-        :param fields: the document fields to index
-        :type fields: list
-        :param unique: whether the index is unique
+        :param fields: The document fields to index.
+        :type fields: [str | unicode]
+        :param unique: Whether the index is unique.
         :type unique: bool
-        :param sparse: index ``None``'s
+        :param sparse: If set to True, documents with None in the field
+            are also indexed. Otherwise they are skipped.
         :type sparse: bool
-        :param deduplicate: Controls whether inserting duplicate index values
-            from the same document into a unique array index leads to a unique
-            constraint error or not. If set to ``True`` (default), only a
-            single instance of each non-unique index values is inserted into
-            the index per document. Trying to insert a value into the index
-            that already exists will always fail, regardless of the value of
-            this field.
+        :param deduplicate: Whether inserting duplicate index values from the
+            same document triggers unique constraint errors or not.
         :param deduplicate: bool
-        :returns: the details on the new index
+        :return: The details on the new index.
         :rtype: dict
-        :raises arango.exceptions.IndexCreateError: if the hash index cannot
-            be created in the collection
+        :raise arango.exceptions.IndexCreateError: If the create fails.
         """
         data = {'type': 'hash', 'fields': fields}
         if unique is not None:
@@ -1102,28 +1036,21 @@ class BaseCollection(APIWrapper):
                            unique=None,
                            sparse=None,
                            deduplicate=None):
-        """Create a new skiplist index in the collection.
+        """Create a new skiplist index.
 
-        A skiplist index is used to find the ranges of documents (e.g. time).
-
-        :param fields: the document fields to index
-        :type fields: list
-        :param unique: whether the index is unique
+        :param fields: The document fields to index.
+        :type fields: [str | unicode]
+        :param unique: Whether the index is unique.
         :type unique: bool
-        :param sparse: index ``None``'s
+        :param sparse: If set to True, documents with None in the field
+            are also indexed. Otherwise they are skipped.
         :type sparse: bool
-        :param deduplicate: Controls whether inserting duplicate index values
-            from the same document into a unique array index leads to a unique
-            constraint error or not. If set to ``True`` (default), only a
-            single instance of each non-unique index values is inserted into
-            the index per document. Trying to insert a value into the index
-            that already exists will always fail, regardless of the value of
-            this field.
+        :param deduplicate: Whether inserting duplicate index values from the
+            same document triggers unique constraint errors or not.
         :param deduplicate: bool
-        :returns: the details on the new index
+        :return: The details on the new index.
         :rtype: dict
-        :raises arango.exceptions.IndexCreateError: if the skiplist index
-            cannot be created in the collection
+        :raise arango.exceptions.IndexCreateError: If the create fails.
         """
         data = {'type': 'skiplist', 'fields': fields}
         if unique is not None:
@@ -1135,19 +1062,18 @@ class BaseCollection(APIWrapper):
         return self._add_index(data)
 
     def add_geo_index(self, fields, ordered=None):
-        """Create a geo-spatial index in the collection.
+        """Create a geo-spatial index.
 
-        :param fields: if given a single field, the index is created using its
-            value (which must be a list with at least two floats), and if given
-            a list of fields, the index is created using values of both;
-            documents without the fields or with invalid values are ignored.
-        :type fields: list
-        :param ordered: whether the order is longitude -> latitude
+        :param fields: A single document field or a list of document fields. If
+            a single field is given, the field must have values that ar lists
+            with at least two floats. Documents with missing fields or invalid
+            values are excluded.
+        :type fields: str | unicode | [str | unicode]
+        :param ordered: Whether the order is longitude then latitude.
         :type ordered: bool
-        :returns: the details on the new index
+        :return: The details on the new index.
         :rtype: dict
-        :raises arango.exceptions.IndexCreateError: if the geo-spatial index
-            cannot be created in the collection
+        :raise arango.exceptions.IndexCreateError: If the create fails.
         """
         data = {'type': 'geo', 'fields': fields}
         if ordered is not None:
@@ -1155,22 +1081,15 @@ class BaseCollection(APIWrapper):
         return self._add_index(data)
 
     def add_fulltext_index(self, fields, min_length=None):
-        """Create a fulltext index in the collection.
+        """Create a fulltext index.
 
-        A fulltext index is used to find words or prefixes of words. Only words
-        with textual values of minimum length are indexed. Word tokenization is
-        done using the word boundary analysis provided by libicu, which uses
-        the language selected during server startup. Words are indexed in their
-        lower-cased form. The index supports complete match and prefix queries.
-
-        :param fields: the field to index
-        :type fields: list
-        :param min_length: the minimum number of characters to index
+        :param fields: The document fields to index.
+        :type fields: [str | unicode]
+        :param min_length: The minimum number of characters to index.
         :type min_length: int
-        :returns: the details on the new index
+        :return: The details on the new index.
         :rtype: dict
-        :raises arango.exceptions.IndexCreateError: if the fulltext index
-            cannot be created in the collection
+        :raise arango.exceptions.IndexCreateError: If the create fails.
         """
         # TODO keep an eye on this for future ArangoDB releases
         if len(fields) > 1:
@@ -1182,24 +1101,23 @@ class BaseCollection(APIWrapper):
         return self._add_index(data)
 
     def add_persistent_index(self, fields, unique=None, sparse=None):
-        """Create a persistent index in the collection.
+        """Create a persistent index.
 
-        :param fields: the field to index
-        :type fields: list
-        :param unique: whether the index is unique
+        :param fields: The document fields to index.
+        :type fields: [str | unicode]
+        :param unique: Whether the index is unique.
         :type unique: bool
-        :param sparse: exclude documents that do not contain at least one of
-            the indexed fields or that have a value of ``None`` in any of the
-            indexed fields
+        :param sparse: Exclude documents that do not contain at least one of
+            the indexed fields, or documents that have a value of None in
+            any of the indexed fields.
         :type sparse: bool
-        :returns: the details on the new index
+        :return: The details on the new index.
         :rtype: dict
-        :raises arango.exceptions.IndexCreateError: if the persistent index
-            cannot be created in the collection
+        :raise arango.exceptions.IndexCreateError: If the create fails.
 
         .. note::
             Unique persistent indexes on non-sharded keys are not supported
-            in a cluster
+            in a cluster.
         """
         data = {'type': 'persistent', 'fields': fields}
         if unique is not None:
@@ -1209,23 +1127,22 @@ class BaseCollection(APIWrapper):
         return self._add_index(data)
 
     def delete_index(self, index_id, ignore_missing=False):
-        """Delete an index from the collection.
+        """Delete an index.
 
-        :param index_id: the ID of the index to delete
-        :type index_id: str  | unicode
-        :param ignore_missing: ignore missing indexes
+        :param index_id: The ID of the index to delete.
+        :type index_id: str | unicode
+        :param ignore_missing: Do not raise an exception on missing indexes.
         :type ignore_missing: bool
-        :returns: whether the index was deleted successfully
+        :return: True if deleted successfully, False otherwise.
         :rtype: bool
-        :raises arango.exceptions.IndexDeleteError: if the specified index
-            cannot be deleted from the collection
+        :raise arango.exceptions.IndexDeleteError: If the delete fails.
         """
         request = Request(
             method='delete',
             endpoint='/_api/index/{}/{}'.format(self._name, index_id)
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code == 404 and res.error_code == 1212:
                 if ignore_missing:
                     return False
@@ -1234,18 +1151,16 @@ class BaseCollection(APIWrapper):
                 raise IndexDeleteError(res)
             return not res.body['error']
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def user_access(self, username):
-        """Return a user's access details for the collection.
-
-        Appropriate permissions are required in order to execute this method.
+        """Return a user's access details.
 
         :param username: The name of the user.
         :type username: str | unicode
-        :returns: The access details (e.g. ``"rw"``, ``None``)
-        :rtype: str | unicode | None
-        :raises: arango.exceptions.UserAccessError: If the retrieval fails.
+        :return: The access details (e.g. "rw", None)
+        :rtype: str | unicode
+        :raise: arango.exceptions.UserAccessError: If the retrieval fails.
         """
         request = Request(
             method='get',
@@ -1254,27 +1169,22 @@ class BaseCollection(APIWrapper):
             )
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise UserAccessError(res)
             result = res.body['result'].lower()
-            if result == 'none':
-                return None
-            else:
-                return result
+            return None if result == 'none' else result
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def grant_user_access(self, username):
         """Grant user access to the collection.
 
-        Appropriate permissions are required in order to execute this method.
-
         :param username: The name of the user.
         :type username: str | unicode
-        :returns: Whether the operation was successful or not.
+        :return: True if successful, False otherwise.
         :rtype: bool
-        :raises arango.exceptions.UserGrantAccessError: If the operation fails.
+        :raise arango.exceptions.UserGrantAccessError: If the operation fails.
         """
         request = Request(
             method='put',
@@ -1284,23 +1194,21 @@ class BaseCollection(APIWrapper):
             data={'grant': 'rw'}
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code in HTTP_OK:
                 return True
             raise UserGrantAccessError(res)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def revoke_user_access(self, username):
         """Revoke user access to the collection.
 
-        Appropriate permissions are required in order to execute this method.
-
         :param username: The name of the user.
         :type username: str | unicode
-        :returns: Whether the operation was successful or not.
+        :return: True if successful, False otherwise.
         :rtype: bool
-        :raises arango.exceptions.UserRevokeAccessError: If operation fails.
+        :raise arango.exceptions.UserRevokeAccessError: If the operation fails.
         """
         request = Request(
             method='delete',
@@ -1309,9 +1217,9 @@ class BaseCollection(APIWrapper):
             )
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code in HTTP_OK:
                 return True
             raise UserRevokeAccessError(res)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)

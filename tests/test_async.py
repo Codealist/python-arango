@@ -75,7 +75,7 @@ def test_async_execute_error():
     with pytest.raises(AsyncExecuteError):
         asynchronous.collection(col_name).properties()
     with pytest.raises(AsyncExecuteError):
-        asynchronous.aql.execute('FOR d IN {} RETURN d'.format(col_name))
+        asynchronous.aql._execute_request('FOR d IN {} RETURN d'.format(col_name))
 
 
 @pytest.mark.order3
@@ -147,7 +147,7 @@ def test_async_inserts_with_result():
     # result had already been calculated.  A fourth job has been created to
     # test this.
 
-    job4._conn = bad_db._conn
+    job4._conn = bad_db._requester
     with pytest.raises(AsyncJobResultError) as err:
         job4.result(raise_errors=True)
     assert '401' in err.value.message
@@ -171,12 +171,12 @@ def test_async_query():
     # TODO CHANGED removed AsyncJobResultError due to enforcement of constant
     # behavior of async job errors
     # Test asynchronous execution of an invalid AQL query
-    job = asynchronous.aql.execute('THIS IS AN INVALID QUERY')
+    job = asynchronous.aql._execute_request('THIS IS AN INVALID QUERY')
     wait_on_job(job)
     assert isinstance(job.result(), AsyncJobResultError)
 
     # Test asynchronous execution of a valid AQL query
-    job = asynchronous.aql.execute(
+    job = asynchronous.aql._execute_request(
         'FOR d IN {} RETURN d'.format(col_name),
         count=True,
         batch_size=1,
@@ -187,7 +187,7 @@ def test_async_query():
     assert set(d['_key'] for d in job.result()) == {'1', '2', '3'}
 
     # Test asynchronous execution of another valid AQL query
-    job = asynchronous.aql.execute(
+    job = asynchronous.aql._execute_request(
         'FOR d IN {} FILTER d.val == @value RETURN d'.format(col_name),
         bind_vars={'value': 1},
         count=True
@@ -216,7 +216,7 @@ def test_async_get_status():
     assert 'Job {} missing'.format(job.id) in err.value.message
 
     # Test get status without authentication
-    job._conn = bad_db._conn
+    job._conn = bad_db._requester
     with pytest.raises(AsyncJobStatusError) as err:
         job.status()
     assert 'HTTP 401' in err.value.message
@@ -280,7 +280,7 @@ def test_clear_async_job():
         assert job.clear(ignore_missing=True) is False
 
     # Test clear without authentication
-    job1._conn = bad_db._conn
+    job1._conn = bad_db._requester
     with pytest.raises(AsyncJobClearError) as err:
         job1.clear(ignore_missing=False)
     assert 'HTTP 401' in err.value.message

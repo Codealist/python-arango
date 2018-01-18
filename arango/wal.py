@@ -1,28 +1,25 @@
 from __future__ import absolute_import, unicode_literals
 
+from arango import APIWrapper
 from arango import Request
-from arango.utils import HTTP_OK
 from arango.exceptions import (
     WALFlushError,
     WALPropertiesError,
     WALConfigureError,
     WALTransactionListError
 )
-from arango import APIWrapper
+from arango.utils import HTTP_OK
 
 
 class WriteAheadLog(APIWrapper):
     """ArangoDB write-ahead log object.
 
-    :param connection: ArangoDB database connection
-    :type connection: arango.connection.Connection
-
-    .. note::
-        This class is designed to be instantiated internally only.
+    :param requester: ArangoDB API requester object.
+    :type requester: arango.requesters.Requester
     """
 
-    def __init__(self, connection):
-        APIWrapper.__init__(self, connection)
+    def __init__(self, requester):
+        super(WriteAheadLog, self).__init__(requester)
 
     def __repr__(self):
         return '<ArangoDB write-ahead log>'
@@ -30,17 +27,16 @@ class WriteAheadLog(APIWrapper):
     def properties(self):
         """Return the configuration of the write-ahead log.
 
-        :returns: the configuration of the write-ahead log
+        :return: The configuration of the write-ahead log
         :rtype: dict
-        :raises arango.exceptions.WALPropertiesError: if the WAL properties
-            cannot be retrieved from the server
+        :raise arango.exceptions.WALPropertiesError: If request fails.
         """
         request = Request(
             method='get',
             endpoint='/_admin/wal/properties'
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise WALPropertiesError(res)
             return {
@@ -53,30 +49,32 @@ class WriteAheadLog(APIWrapper):
                 'throttle_limit': res.body.get('throttleWhenPending')
             }
 
-        response = self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
-        return response
-
-    def configure(self, oversized_ops=None, log_size=None, historic_logs=None,
-                  reserve_logs=None, throttle_wait=None, throttle_limit=None):
-        """Configure the parameters of the write-ahead log.
+    def configure(self,
+                  oversized_ops=None,
+                  log_size=None,
+                  historic_logs=None,
+                  reserve_logs=None,
+                  throttle_wait=None,
+                  throttle_limit=None):
+        """Configure the write-ahead log.
 
         :param oversized_ops: execute and store ops bigger than a log file
         :type oversized_ops: bool
-        :param log_size: the size of each write-ahead log file
+        :param log_size: The size of each write-ahead log file
         :type log_size: int
-        :param historic_logs: the number of historic log files to keep
+        :param historic_logs: The number of historic log files to keep
         :type historic_logs: int
-        :param reserve_logs: the number of reserve log files to allocate
+        :param reserve_logs: The number of reserve log files to allocate
         :type reserve_logs: int
         :param throttle_wait: wait time before aborting when throttled (in ms)
         :type throttle_wait: int
         :param throttle_limit: number of pending gc ops before write-throttling
         :type throttle_limit: int
-        :returns: the new configuration of the write-ahead log
+        :return: The new configuration of the write-ahead log
         :rtype: dict
-        :raises arango.exceptions.WALPropertiesError: if the WAL properties
-            cannot be modified
+        :raise arango.exceptions.WALPropertiesError: If request fails.
         """
         data = {}
         if oversized_ops is not None:
@@ -98,7 +96,7 @@ class WriteAheadLog(APIWrapper):
             data=data
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise WALConfigureError(res)
             return {
@@ -111,29 +109,28 @@ class WriteAheadLog(APIWrapper):
                 'throttle_limit': res.body.get('throttleWhenPending')
             }
 
-        response = self.handle_request(request, handler)
-
-        return response
+        return self._execute_request(request, response_handler)
 
     def transactions(self):
         """Return details on currently running transactions.
 
-        Fields in the returned dictionary:
+        Fields in the returned in the result:
 
-        - *last_collected*: the ID of the last collected log file (at the \
-        start of each running transaction) or ``None`` if no transactions are \
-        running
+        .. code-block:: none
 
-        - *last_sealed*: the ID of the last sealed log file (at the start \
-        of each running transaction) or ``None`` if no transactions are \
-        running
+            "last_collected"    : The ID of the last collected log file (at
+                                  the start of each running transaction) or
+                                  None if no transactions are running.
 
-        - *count*: the number of current running transactions
+            "last_sealed"       : The ID of the last sealed log file (at the
+                                  start of each running transaction) or None
+                                  if no transactions are running.
 
-        :returns: the information about the currently running transactions
+            "count"             : The number of current running transactions.
+
+        :return: The details on currently running transactions.
         :rtype: dict
-        :raises arango.exceptions.WALTransactionListError: if the details on
-            the transactions cannot be retrieved
+        :raise arango.exceptions.WALTransactionListError: If request fails.
         """
 
         request = Request(
@@ -141,7 +138,7 @@ class WriteAheadLog(APIWrapper):
             endpoint='/_admin/wal/transactions'
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise WALTransactionListError(res)
             return {
@@ -150,38 +147,32 @@ class WriteAheadLog(APIWrapper):
                 'count': res.body['runningTransactions']
             }
 
-        response = self.handle_request(request, handler)
-
-        return response
+        return self._execute_request(request, response_handler)
 
     def flush(self, sync=True, garbage_collect=True):
         """Flush the write-ahead log to collection journals and data files.
 
-        :param sync: block until data is synced to disk
+        :param sync: If set to True, block until data is synced to disk.
         :type sync: bool
-        :param garbage_collect: block until flushed data is garbage collected
+        :param garbage_collect: If set to True, block until flushed data is
+            garbage collected.
         :type garbage_collect: bool
-        :returns: whether the write-ahead log was flushed successfully
+        :return: Whether the write-ahead log was flushed successfully.
         :rtype: bool
-        :raises arango.exceptions.WALFlushError: it the WAL cannot
-            be flushed
+        :raise arango.exceptions.WALFlushError: If request fails.
         """
-        data = {
-            'waitForSync': sync,
-            'waitForCollector': garbage_collect
-        }
-
         request = Request(
             method='put',
             endpoint='/_admin/wal/flush',
-            data=data
+            data={
+                'waitForSync': sync,
+                'waitForCollector': garbage_collect
+            }
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise WALFlushError(res)
             return not res.body.get('error')
 
-        response = self.handle_request(request, handler)
-
-        return response
+        return self._execute_request(request, response_handler)

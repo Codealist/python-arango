@@ -1,27 +1,27 @@
 import json
 
 
-class BaseResponse(object):
+class Response(object):
     """ArangoDB HTTP response.
 
-    Overridden methods of :class:`arango.http_clients.base.BaseHTTPClient` must
-    return instances of this.
+    Methods of :class:`arango.http_clients.base.BaseHTTPClient` must return an
+    instance of this class.
 
-    :param method: The HTTP method name (e.g. ``"post"``).
-    :type method: str | unicode | None
+    :param method: The HTTP method name in lowercase (e.g. "post").
+    :type method: str | unicode
     :param url: The request URL
-        (e.g. ``"http://localhost:8529/_db/_system/_api/database"``)
-    :type url: str | unicode | None
-    :param headers: A dict-like mapping object containing the HTTP headers.
-        Must allow case-insensitive key access.
-    :type headers: collections.MutableMapping | None
+        (e.g. "http://localhost:8529/_db/_system/_api/database").
+    :type url: str | unicode
+    :param headers: A mapping object (e.g. dict) containing the HTTP headers.
+        Must allow case-insensitive key indexing.
+    :type headers: collections.MutableMapping
     :param http_code: The HTTP status code.
-    :type http_code: int | None
+    :type http_code: int
     :param http_text: The HTTP status text. This is used only for printing
-        error messages, and has no specification to follow.
-    :type http_text: str | unicode | None
+        error messages, and has no strict requirements.
+    :type http_text: str | unicode
     :param body: The HTTP response body.
-    :type body: str | unicode | dict | None
+    :type body: str | unicode | dict
     """
 
     __slots__ = (
@@ -34,7 +34,6 @@ class BaseResponse(object):
         'raw_body',
         'error_code',
         'error_message',
-        'is_json'
     )
 
     def __init__(self,
@@ -47,12 +46,10 @@ class BaseResponse(object):
         self.headers = processed.get('headers', None)
         self.status_code = processed.get('status_code', None)
         self.status_text = processed.get('status_text', None)
-
         self.raw_body = None
         self.body = None
         self.error_code = None
         self.error_message = None
-
         self.update_body(processed.get('body', None))
 
     def update_body(self, body):

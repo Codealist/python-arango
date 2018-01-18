@@ -1491,25 +1491,25 @@ def test_find_by_text():
     col.import_bulk(test_docs)
 
     # Test find_by_text with default options
-    result = col.find_by_text(key='text', query='bar,|baz').result()
+    result = col.find_by_text(field='text', query='bar,|baz').result()
     assert clean_keys(list(result)) == [doc2, doc3]
 
     # Test find_by_text with limit
-    result = col.find_by_text(key='text', query='foo', limit=1).result()
+    result = col.find_by_text(field='text', query='foo', limit=1).result()
     assert len(list(result)) == 1
-    result = col.find_by_text(key='text', query='foo', limit=2).result()
+    result = col.find_by_text(field='text', query='foo', limit=2).result()
     assert len(list(result)) == 2
-    result = col.find_by_text(key='text', query='foo', limit=3).result()
+    result = col.find_by_text(field='text', query='foo', limit=3).result()
     assert len(list(result)) == 3
 
     # Test find_by_text with invalid queries
-    assert isinstance(col.find_by_text(key='text', query='+').result(),
+    assert isinstance(col.find_by_text(field='text', query='+').result(),
                       DocumentGetError)
-    assert isinstance(col.find_by_text(key='text', query='|').result(),
+    assert isinstance(col.find_by_text(field='text', query='|').result(),
                       DocumentGetError)
 
     # Test find_by_text with missing column
-    assert isinstance(col.find_by_text(key='missing', query='foo').result(),
+    assert isinstance(col.find_by_text(field='missing', query='foo').result(),
                       DocumentGetError)
 
 

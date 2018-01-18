@@ -310,20 +310,20 @@ def test_create_user_with_database():
     assert username2 in all_usernames
 
     # Test if the first user has access to the database
-    assert user_db.connection.username == username1
-    assert user_db.connection.password == 'password1'
+    assert user_db.requester.username == username1
+    assert user_db.requester.password == 'password1'
     user_db.properties()
 
     # Test if the second user also has access to the database
     user_db = arango_client.database(another_db_name, username2, 'password2')
-    assert user_db.connection.username == username2
-    assert user_db.connection.password == 'password2'
+    assert user_db.requester.username == username2
+    assert user_db.requester.password == 'password2'
     user_db.properties()
 
     # Test if the third user has access to the database (should not)
     user_db = arango_client.database(another_db_name, username3, 'password3')
-    assert user_db.connection.username == username3
-    assert user_db.connection.password == 'password3'
+    assert user_db.requester.username == username3
+    assert user_db.requester.password == 'password3'
     with pytest.raises(DatabasePropertiesError) as err:
         user_db.properties()
     assert err.value.http_code in HTTP_AUTH_ERR

@@ -26,7 +26,7 @@ class UserDeleteError(ArangoError):
 
 
 class UserAccessError(ArangoError):
-    """Failed to retrieve the names of databases user can access."""
+    """Failed to retrieve the user access details."""
 
 
 class UserGrantAccessError(ArangoError):

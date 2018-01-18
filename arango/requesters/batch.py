@@ -5,30 +5,30 @@ from uuid import uuid4
 from arango.request import Request
 from arango.jobs import BatchJob, BaseJob
 from arango.utils.lock import Lock
-from arango.connections import Connection
+from arango.requesters import Requester
 from arango.utils import HTTP_OK
-from arango.exceptions import BatchExecuteError
-from arango.responses import BaseResponse
+from arango.exceptions import BatchExecuteError, ArangoError
+from arango.responses import Response
 
 
-class BatchExecution(Connection):
+class BatchRequester(Requester):
     """ArangoDB batch request.
 
     API requests via this class are queued in memory and executed as a whole
     in a single HTTP call to ArangoDB server.
 
-    :param connection: ArangoDB database connection
-    :type connection: arango.connection.Connection
-    :param return_result: if ``True``, a :class:`arango.batch.BatchJob`
+    :param requester: ArangoDB API requester object.
+    :type requester: arango.requesters.Requester
+    :param return_result: If set to True, a :class:`arango.batch.BatchJob`
         (which holds the result after the commit) is returned each time an API
-        request is queued, otherwise ``None`` is returned
+        request is queued, otherwise None is returned
     :type return_result: bool
     :param commit_on_error: only applicable when *context managers* are used
-        to execute the batch request: if ``True``, the requests queued
+        to execute the batch request: If set to True, the requests queued
         so far are committed even if an exception is raised before existing
-        out of the context (default: ``False``)
+        out of the context (default: False)
     :type commit_on_error: bool
-    :param submit_timeout: the timeout to use for acquiring the lock necessary
+    :param submit_timeout: The timeout to use for acquiring the lock necessary
         to submit a batch.  Only relevant in multi-threaded contexts. In single
         threaded contexts, acquiring this lock will never fail.  A value of
         <= 0 means never timeout, a positive integer value indicates the number
@@ -41,7 +41,7 @@ class BatchExecution(Connection):
                  return_result=True,
                  commit_on_error=False,
                  submit_timeout=-1):
-        super(BatchExecution, self).__init__(
+        super(BatchRequester, self).__init__(
             protocol=connection.protocol,
             host=connection.host,
             port=connection.port,
@@ -79,31 +79,37 @@ class BatchExecution(Connection):
     def id(self):
         """Return the UUID of the batch request.
 
-        :return: the UUID of the batch request
+        :return: The UUID of the batch request
         :rtype: str | unicode
         """
         return self._id
 
-    def handle_request(self, request, handler, **kwargs):
+    def execute_request(self, request, response_handler, job_class=None):
         """Handle the incoming request and response handler.
 
-        :param request: the API request queued as part of the current batch
+        :param request: The API request queued as part of the current batch
             request scope, and executed only when the batch is committed via
             method :func:`arango.batch.BatchExecution.commit`
         :type request: arango.request.Request
-        :param handler: the response handler
-        :type handler: callable
-        :returns: the :class:`arango.batch.BatchJob` or None
-        :rtype: :class:`arango.batch.BatchJob` | None
+        :param response_handler: The response handler
+        :type response_handler: callable
+        :param job_class: required to maintain compatibility with the
+            BaseConnection interface, but should be None
+        :return: The :class:`arango.batch.BatchJob` or None
+        :rtype: :class:`arango.batch.BatchJob`
         """
 
         batch_job = None
+
+        if job_class is not None:
+            raise ArangoError('batch cannot called with a job_class other '
+                              'than none')
 
         with self._lock:
             self._requests.append(request)
 
             if self._return_result:
-                batch_job = BatchJob(handler)
+                batch_job = BatchJob(response_handler)
                 self._batch_jobs.append(batch_job)
 
         return batch_job
@@ -115,15 +121,15 @@ class BatchExecution(Connection):
     def commit(self):
         """Execute the queued API requests in a single HTTP call.
 
-        If `return_response` was set to ``True`` during initialization, the
+        If `return_response` was set to True during initialization, the
         responses are saved within an :class:`arango.batch.BatchJob` object
         for later retrieval via its :func:`arango.batch.BatchJob.result`
         method
 
-        :returns: list of :class:`arango.batch.BatchJob` or None
-        :rtype: [arango.batch.BatchJob] | None
+        :return: list of :class:`arango.batch.BatchJob` or None
+        :rtype: [arango.batch.BatchJob]
 
-        :raises arango.exceptions.BatchExecuteError: if the batch request
+        :raise arango.exceptions.BatchExecuteError: If the batch request
             cannot be executed
         """
 
@@ -183,15 +189,15 @@ class BatchExecution(Connection):
                         'body': raw_body
                     }
 
-                    response = BaseResponse(response_dict,
-                                            self.response_mapper)
+                    response = Response(response_dict,
+                                        self.response_mapper)
 
                     if int(status_code) in HTTP_OK:
                         job.update('done', response)
                     else:
                         job.update('error', response)
 
-            Connection.handle_request(self, batch_request, handler,
+            Requester.execute_request(self, batch_request, handler,
                                       job_class=BaseJob)\
                 .result(raise_errors=True)
 
@@ -204,7 +210,7 @@ class BatchExecution(Connection):
     def clear(self):
         """Clear the requests queue and discard pointers to batch jobs issued.
 
-        :returns: the number of requests (and batch job pointers) discarded
+        :return: The number of requests (and batch job pointers) discarded
         :rtype: int
 
         .. warning::

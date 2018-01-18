@@ -65,7 +65,6 @@ def test_properties():
     assert 'path' in properties
     assert properties['system'] is False
     assert properties['name'] == db_name
-    assert 'ArangoDB connection' in repr(db.connection)
 
     with pytest.raises(DatabasePropertiesError):
         bad_db.properties()
@@ -346,6 +345,9 @@ def test_echo():
 
 @pytest.mark.order19
 def test_sleep():
+    if arango_version(arango_client) >= (3, 3):
+        return
+
     assert db.sleep(0) == 0
 
     with pytest.raises(ServerSleepError):
@@ -354,15 +356,14 @@ def test_sleep():
 
 @pytest.mark.order20
 def test_execute():
-    major, minor = arango_version(arango_client)
+    if arango_version(arango_client) >= (3, 2):
+        return
 
-    # TODO ArangoDB 3.2 seems to be missing this API endpoint
-    if not (major == 3 and minor == 2):
-        assert db.execute('return 1') == '1'
-        assert db.execute('return "test"') == '"test"'
-        with pytest.raises(ServerExecuteError) as err:
-            db.execute('return invalid')
-        assert 'Internal Server Error' in err.value.message
+    assert db._execute_request('return 1') == '1'
+    assert db._execute_request('return "test"') == '"test"'
+    with pytest.raises(ServerExecuteError) as err:
+        db._execute_request('return invalid')
+    assert 'Internal Server Error' in err.value.message
 
 
 @pytest.mark.order21

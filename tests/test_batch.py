@@ -205,14 +205,14 @@ def test_batch_query_context_manager_with_result():
             {'_key': '2', 'val': 2},
             {'_key': '3', 'val': 3},
         ])
-        job2 = batch.aql.execute(
+        job2 = batch.aql._execute_request(
             'FOR d IN {} RETURN d'.format(col_name),
             count=True,
             batch_size=1,
             ttl=10,
             optimizer_rules=['+all']
         )
-        job3 = batch.aql.execute(
+        job3 = batch.aql._execute_request(
             'FOR d IN {} FILTER d.val == @value RETURN d'.format(col_name),
             bind_vars={'value': 1},
             count=True

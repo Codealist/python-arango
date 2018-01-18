@@ -5,7 +5,7 @@ from json import dumps
 from six import string_types
 
 
-def sanitize(data):
+def sanitize_data(data):
     if data is None:
         return None
     elif isinstance(data, string_types):
@@ -14,16 +14,16 @@ def sanitize(data):
         return dumps(data)
 
 
-def fix_params(params):
+def sanitize_params(params):
     if params is None:
         return params
 
-    outparams = {}
+    sanitized_params = {}
 
     for param, value in params.items():
         if isinstance(value, bool):
             value = int(value)
 
-        outparams[param] = value
+        sanitized_params[param] = value
 
-    return outparams
+    return sanitized_params

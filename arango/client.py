@@ -1,45 +1,45 @@
-from arango.http_clients import DefaultHTTPClient
-from arango.connections import Connection
 from arango import Request
-from arango.utils import HTTP_OK
+from arango.requesters import Requester
 from arango.database import Database
 from arango.exceptions import (
     DatabaseCreateError,
     DatabaseDeleteError,
     ServerEndpointsError
 )
+from arango.http_clients import DefaultHTTPClient
+from arango.utils import HTTP_OK
 
 
 class ArangoClient(Database):
     """ArangoDB Client.
 
-        :param protocol: The internet transfer protocol (default: ``"http"``).
-        :type protocol: str | unicode
-        :param host: ArangoDB server host (default: ``"localhost"``).
-        :type host: str | unicode
-        :param port: ArangoDB server port (default: ``8529``).
-        :type port: int or str
-        :param username: ArangoDB default username (default: ``"root"``).
-        :type username: str | unicode
-        :param password: ArangoDB default password (default: ``""``).
-        :param verify: Check the connection during initialization. Root
-            privileges are required to use this flag.
-        :type verify: bool
-        :param http_client: Custom HTTP client to override the default one
-            with. Please refer to the API documentation for more details.
-        :type http_client: arango.http_clients.base.BaseHTTPClient
-        :param enable_logging: Log all API requests as debug messages.
-        :type enable_logging: bool
-        :param check_cert: Verify SSL certificate when making HTTP requests.
-            This flag is ignored if a custom **http_client** is specified.
-        :type check_cert: bool
-        :param use_session: Use session when making HTTP requests. This flag is
-            ignored if a custom **http_client** is specified.
-        :type use_session: bool
-        :param logger: Custom logger to record the API requests with. The
-            logger's ``debug`` method is called.
-        :type logger: logging.Logger
-        """
+    :param protocol: Internet transfer protocol (default: "http").
+    :type protocol: str | unicode
+    :param host: ArangoDB server host (default: "localhost").
+    :type host: str | unicode
+    :param port: ArangoDB server port (default: 8529).
+    :type port: int or str
+    :param username: ArangoDB default username (default: "root") used for
+        basic HTTP authentication.
+    :type username: str | unicode
+    :param password: ArangoDB default password (default: "") used for basic
+        HTTP authentication.
+    :param verify: If set to True, a sample API call is sent to verify the
+        connection during initialization of this client. Root privileges are
+        required to use this parameter.
+    :type verify: bool
+    :param http_client: Custom HTTP client to override the default one with.
+    :type http_client: arango.http_clients.base.BaseHTTPClient
+    :param check_cert: Verify SSL certificate when making HTTP requests.
+        This flag is ignored if a custom **http_client** is specified.
+    :type check_cert: bool
+    :param use_session: Use session when making HTTP requests. This flag is
+        ignored if a custom **http_client** is specified.
+    :type use_session: bool
+    :param logger: Custom logger to record the API requests with. The
+        logger's ``debug`` method is called.
+    :type logger: logging.Logger
+    """
 
     def __init__(self,
                  protocol='http',
@@ -49,19 +49,16 @@ class ArangoClient(Database):
                  password='',
                  verify=False,
                  http_client=None,
-                 enable_logging=True,
                  check_cert=True,
                  use_session=True,
-                 logger=None,
-                 async_ready=False):
+                 logger=None):
 
         if http_client is None:
             http_client = DefaultHTTPClient(
                 use_session=use_session,
                 check_cert=check_cert
             )
-
-        conn = Connection(
+        requester = Requester(
             protocol=protocol,
             host=host,
             port=port,
@@ -69,20 +66,25 @@ class ArangoClient(Database):
             username=username,
             password=password,
             http_client=http_client,
-            enable_logging=enable_logging,
-            logger=logger,
-            async_ready=async_ready
+            logger=logger
         )
-
-        super(ArangoClient, self).__init__(conn)
+        super(ArangoClient, self).__init__(requester)
 
         if verify:
             self.verify()
 
     def __repr__(self):
-        return '<ArangoDB client for "{}">'.format(self.connection.host)
+        return '<ArangoDB client for "{}">'.format(self.requester.host)
 
-    """System calls. Every call listed here requires root access."""
+    def __getitem__(self, name):
+        """Return the database object.
+
+        :param name: The name of the database.
+        :type name: str | unicode
+        :return: The database object.
+        :rtype: arango.database.Database
+        """
+        return self.database(name)
 
     def endpoints(self):
         """Return the list of the endpoints the server is listening on.
@@ -90,14 +92,12 @@ class ArangoClient(Database):
         Each endpoint is mapped to a list of databases. If the list is empty,
         it means all databases can be accessed via the endpoint. If the list
         contains more than one database, the first database receives all the
-        requests by default, unless the name is explicitly specified.
+        requests by default unless the database name is explicitly specified.
 
-        :returns: the list of endpoints
+        :return: The list of endpoints.
         :rtype: list
-        :raises arango.exceptions.ServerEndpointsError: if the endpoints
-            cannot be retrieved from the server
+        :raise arango.exceptions.ServerEndpointsError: If the retrieval fails.
         """
-
         request = Request(
             method='get',
             endpoint='/_api/endpoint'
@@ -108,26 +108,75 @@ class ArangoClient(Database):
                 raise ServerEndpointsError(res)
             return res.body
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, handler)
+
+    def db(self, name, username=None, password=None):
+        """Return the database object.
+
+        :param name: The name of the database.
+        :type name: str | unicode
+        :param username: The username for basic authentication. Overrides the
+            username specified during client initialization.
+        :type username: str | unicode
+        :param password: The password for basic authentication. Overrides the
+            password specified during the client initialization.
+        :type password: str | unicode
+        :return: The database object.
+        :rtype: arango.database.Database
+
+        .. note::
+            This is an alias for :func:`arango.database.Database.database`.
+        """
+        return self.database(name, username, password)
+
+    def database(self, name, username=None, password=None):
+        """Return the database object.
+
+        :param name: The name of the database
+        :type name: str | unicode
+        :param username: The username for authentication (if set, overrides
+            the username specified during the client initialization)
+        :type username: str | unicode
+        :param password: The password for authentication (if set, overrides
+            the password specified during the client initialization
+        :type password: str | unicode
+        :return: The database object
+        :rtype: arango.database.Database
+        """
+        if username is None:
+            username = self.username
+
+        if password is None:
+            password = self.password
+
+        return Database(Requester(
+            protocol=self.protocol,
+            host=self.host,
+            port=self.port,
+            database=name,
+            username=username,
+            password=password,
+            http_client=self.http_client,
+        ))
 
     def create_database(self, name, users=None, username=None, password=None):
         """Create a new database.
 
-        :param name: the name of the new database
+        :param name: The name of the new database
         :type name: str | unicode
-        :param users: the list of users with access to the new database, where
-            each user is a dictionary with keys ``"username"``, ``"password"``,
-            ``"active"`` and ``"extra"``.
+        :param users: The list of users with access to the new database, where
+            each user is a dictionary with keys "username", "password",
+            "active" and "extra".
         :type users: [dict]
-        :param username: the username for authentication (if set, overrides
+        :param username: The username for authentication (if set, overrides
             the username specified during the client initialization)
         :type username: str | unicode
-        :param password: the password for authentication (if set, overrides
+        :param password: The password for authentication (if set, overrides
             the password specified during the client initialization
         :type password: str | unicode
-        :returns: the database object
+        :return: The database object
         :rtype: arango.database.Database
-        :raises arango.exceptions.DatabaseCreateError: if the create fails
+        :raise arango.exceptions.DatabaseCreateError: If the create fails
 
         .. note::
             Here is an example entry in **users**:
@@ -168,18 +217,18 @@ class ArangoClient(Database):
                 raise DatabaseCreateError(res)
             return self.db(name, username, password)
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, handler)
 
     def delete_database(self, name, ignore_missing=False):
         """Delete the database of the specified name.
 
-        :param name: the name of the database to delete
+        :param name: The name of the database to delete
         :type name: str | unicode
         :param ignore_missing: ignore missing databases
         :type ignore_missing: bool
-        :returns: whether the database was deleted successfully
+        :return: whether the database was deleted successfully
         :rtype: bool
-        :raises arango.exceptions.DatabaseDeleteError: if the delete fails
+        :raise arango.exceptions.DatabaseDeleteError: If request fails
 
         .. note::
             Root privileges (i.e. access to the ``_system`` database) are
@@ -197,4 +246,4 @@ class ArangoClient(Database):
                     raise DatabaseDeleteError(res)
             return not res.body['error']
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, handler)

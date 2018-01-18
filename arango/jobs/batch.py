@@ -8,9 +8,8 @@ class BatchJob(BaseJob):
     A batch job tracks the status of a queued API request and its result.
     """
 
-    def __init__(self, handler, job_id=None, response=None):
-        BaseJob.__init__(self, handler, job_id=job_id, response=response,
-                         job_type='batch')
+    def __init__(self, handler, response=None):
+        BaseJob.__init__(self, handler, response=response, job_type='batch')
         self._lock = RLock()
 
     def update(self, status, response=None):
@@ -18,21 +17,20 @@ class BatchJob(BaseJob):
 
         This method designed to be used internally only.
 
-        :param status: the status of the job
+        :param status: The status of the job
         :type status: str
-        :param response: the response to the job
-        :type response: arango.responses.base.BaseResponse
+        :param response: The response to the job
+        :type response: arango.responses.base.Response
         """
-
         with self._lock:
             return BaseJob.update(self, status, response)
 
     def status(self):
         """Return the status of the batch job.
 
-        :returns: the batch job status, which can be ``"pending"`` (the job is
-            still waiting to be committed), ``"done"`` (the job completed) or
-            ``"error"`` (the job raised an exception)
+        :return: The batch job status, which can be "pending" (the job is
+            still waiting to be committed), "done" (the job completed) or
+            "error" (the job raised an exception)
         :rtype: str | unicode
         """
         with self._lock:
@@ -41,9 +39,9 @@ class BatchJob(BaseJob):
     def result(self, raise_errors=False):
         """Return the result of the job or its error.
 
-        :returns: the result of the batch job if the job is successful
+        :return: The result of the batch job if the job is successful
         :rtype: object
-        :raises ArangoError: if the batch job failed
+        :raise ArangoError: If the batch job failed
         """
         with self._lock:
             return BaseJob.result(self)

@@ -1,5 +1,8 @@
 from __future__ import absolute_import, unicode_literals
 
+from six import string_types
+
+from arango import Request
 from arango.collections import BaseCollection
 from arango.exceptions import (
     DocumentGetError,
@@ -9,7 +12,6 @@ from arango.exceptions import (
     DocumentRevisionError,
     DocumentUpdateError,
 )
-from arango import Request
 from arango.utils import HTTP_OK
 
 
@@ -26,16 +28,16 @@ class EdgeCollection(BaseCollection):
     additional guarantees: all modifications are executed in transactions and
     edge documents are checked against the edge definitions on insert.
 
-    :param connection: ArangoDB database connection
-    :type connection: arango.connection.Connection
-    :param graph_name: the name of the graph
+    :param requester: ArangoDB API requester object.
+    :type requester: arango.requesters.Requester
+    :param graph_name: The name of the graph.
     :type graph_name: str | unicode
-    :param name: the name of the edge collection
+    :param name: The name of the edge collection.
     :type name: str | unicode
     """
 
-    def __init__(self, connection, graph_name, name):
-        super(EdgeCollection, self).__init__(connection, name)
+    def __init__(self, requester, graph_name, name):
+        super(EdgeCollection, self).__init__(requester, name)
         self._graph_name = graph_name
 
     def __repr__(self):
@@ -47,28 +49,27 @@ class EdgeCollection(BaseCollection):
     @property
     def graph_name(self):
         """Return the name of the graph.
-        :returns: the name of the graph
+
+        :return: The name of the graph.
         :rtype: str | unicode
         """
         return self._graph_name
 
     def get(self, key, rev=None):
-        """Fetch a document by key from the edge collection.
+        """Retrieve an edge document by its key.
 
-        :param key: the document key
+        :param key: The document key.
         :type key: str | unicode
-        :param rev: the document revision
-        :type rev: str | unicode | None
-        :returns: the vertex document or ``None`` if not found
-        :rtype: dict | None
-        :raises arango.exceptions.DocumentRevisionError: if the given revision
-            does not match the revision of the target document
-        :raises arango.exceptions.DocumentGetError: if the document cannot
-            be fetched from the collection
+        :param rev: The document revision to be compared against the revision
+            of the target document
+        :type rev: str | unicode
+        :return: The edge document or None if not found.
+        :rtype: dict
+        :raise arango.exceptions.DocumentRevisionError: If **rev** is given and
+            its value does not match the target document revision.
+        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
         """
-
         headers = {}
-
         if rev is not None:
             headers['If-Match'] = rev
 
@@ -80,7 +81,7 @@ class EdgeCollection(BaseCollection):
             headers=headers
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code == 412:
                 raise DocumentRevisionError(res)
             elif res.status_code == 404 and res.error_code == 1202:
@@ -89,23 +90,29 @@ class EdgeCollection(BaseCollection):
                 raise DocumentGetError(res)
             return res.body['edge']
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def insert(self, document, sync=None):
-        """Insert a new document into the edge collection.
+        """Insert a new edge document.
 
-        If the ``"_key"`` field is present in **document**, its value is used
-        as the key of the new document. Otherwise, the key is auto-generated.
-        The **document** must contain the fields ``"_from"`` and ``"_to"``.
-
-        :param document: the document body
+        :param document: The document to insert.
         :type document: dict
-        :param sync: wait for the operation to sync to disk
-        :type sync: bool | None
-        :returns: the ID, revision and key of the new document
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :return: The ID, revision and key of the new document.
         :rtype: dict
-        :raises arango.exceptions.DocumentInsertError: if the document cannot
-            be inserted into the collection
+        :raise arango.exceptions.DocumentInsertError: If the insert fails.
+
+        .. note::
+            The **document** must always contain the fields "from" and "_to".
+
+        .. note::
+            If the "_key" field is present in **document**, its value is
+            used as the key of the new document. If not present, the key is
+            auto-generated.
+
+        .. note::
+            The "_id" and "_rev" fields are ignored if present in **document**.
         """
         params = {}
         if sync is not None:
@@ -120,34 +127,37 @@ class EdgeCollection(BaseCollection):
             params=params
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code not in HTTP_OK:
                 raise DocumentInsertError(res)
             return res.body['edge']
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def update(self, document, keep_none=True, sync=None):
-        """Update a document by its key in the edge collection.
+        """Update an edge document.
 
-        The ``"_key"`` field must be present in **document**. If the ``"_rev"``
-        field is present in **document**, its value is compared against the
-        revision of the target document.
-
-        :param document: the partial/full document with the updated values
+        :param document: The partial or full document with the updated values.
         :type document: dict
-        :param keep_none: if ``True``, the fields with value ``None``
-            are retained in the document, otherwise the fields are removed
-            from the document completely
+        :param keep_none: If set to True, fields with value None are retained
+            in the document, otherwise they are removed completely.
         :type keep_none: bool
-        :param sync: wait for the operation to sync to disk
-        :type sync: bool | None
-        :returns: the ID, revision and key of the updated document
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :return: The ID, revision and key of the updated document.
         :rtype: dict
-        :raises arango.exceptions.DocumentRevisionError: if the given revision
-            does not match the revision of the target document
-        :raises arango.exceptions.DocumentUpdateError: if the document cannot
-            be updated        """
+        :raise arango.exceptions.DocumentRevisionError: If the "_rev" field is
+            in **document** and its value does not match the revision of the
+            target document.
+        :raise arango.exceptions.DocumentUpdateError: If the update fails.
+
+        .. note::
+            The **document** must always contain the "_key" field.
+
+        .. note::
+            If the "_rev" field is present in **document**, its value is
+            compared against the revision of the target document.
+        """
         params = {'keepNull': keep_none}
         if sync is not None:
             params['waitForSync'] = sync
@@ -167,7 +177,7 @@ class EdgeCollection(BaseCollection):
             headers=headers
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code == 412:
                 raise DocumentRevisionError(res)
             elif res.status_code not in HTTP_OK:
@@ -176,29 +186,34 @@ class EdgeCollection(BaseCollection):
             edge['_old_rev'] = edge.pop('_oldRev')
             return edge
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def replace(self, document, sync=None):
-        """Replace a document by its key in the edge collection.
+        """Replace an edge document.
 
-        The ``"_key"``, ``"_from"`` and ``"_to"`` fields must be present in
-        **document**. If the ``"_rev"`` field is present in **document**, its
-        value is compared against the revision of the target document.
-
-        :param document: the new document
+        :param document: The new document to replace the old one with.
         :type document: dict
-        :param sync: wait for the operation to sync to disk
-        :type sync: bool | None
-        :returns: the ID, revision and key of the replaced document
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :return: The ID, revision and key of the replaced document.
         :rtype: dict
-        :raises arango.exceptions.DocumentRevisionError: if the given revision
-            does not match the revision of the target document
-        :raises arango.exceptions.DocumentReplaceError: if the document cannot
-            be replaced        """
-        headers, params = {}, {}
+        :raise arango.exceptions.DocumentRevisionError: If the "_rev" field is
+            in **document** and its value does not match the revision of the
+            target document.
+        :raise arango.exceptions.DocumentReplaceError: If the replace fails.
+
+        .. note::
+            The **document** must always contain the "_key" field.
+
+        .. note::
+            If the "_rev" field is present in **document**, its value is
+            compared against the revision of the target document.
+        """
+        params = {}
         if sync is not None:
             params['waitForSync'] = sync
 
+        headers = {}
         revision = document.get('_rev')
         if revision is not None:
             headers['If-Match'] = revision
@@ -213,7 +228,7 @@ class EdgeCollection(BaseCollection):
             headers=headers
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code == 412:
                 raise DocumentRevisionError(res)
             elif res.status_code not in HTTP_OK:
@@ -222,47 +237,54 @@ class EdgeCollection(BaseCollection):
             edge['_old_rev'] = edge.pop('_oldRev')
             return edge
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)
 
     def delete(self, document, ignore_missing=False, sync=None):
-        """Delete a document from the collection by its key.
+        """Delete an edge document.
 
-        The ``"_key"`` field must be present in **document**. If the ``"_rev"``
-        field is present in **document**, its value is compared against the
-        revision of the target document.
-
-        :param document: the document to delete
-        :type document: dict
-        :param sync: wait for the operation to sync to disk
-        :type sync: bool | None
-        :param ignore_missing: ignore missing documents
+        :param document: The document or its key.
+        :type document: str | unicode | dict
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param ignore_missing: Do not raise an exception on missing document.
         :type ignore_missing: bool
-        :returns: whether the document was deleted successfully
+        :return: True if document was deleted successfully, False otherwise.
         :rtype: bool
-        :raises arango.exceptions.DocumentRevisionError: if the given revision
-            does not match the revision of the target document
-        :raises arango.exceptions.DocumentDeleteError: if the document cannot
-            be deleted from the collection
+        :raise arango.exceptions.DocumentRevisionError: If the "_rev" field is
+            in **document** and its value does not match the revision of the
+            target document.
+        :raise arango.exceptions.DocumentDeleteError: If the delete fails.
+
+        .. note::
+            The **document** must always contain the "_key" field.
+
+        .. note::
+            If the "_rev" field is present in **document**, its value is
+            compared against the revision of the target document.
         """
         params = {}
         if sync is not None:
             params['waitForSync'] = sync
 
         headers = {}
-        revision = document.get('_rev')
-        if revision is not None:
-            headers['If-Match'] = revision
+        if isinstance(document, string_types):
+            key = document
+        else:
+            revision = document.get('_rev')
+            if revision is not None:
+                headers['If-Match'] = revision
+            key = document['_key']
 
         request = Request(
             method='delete',
             endpoint='/_api/gharial/{}/edge/{}/{}'.format(
-                self._graph_name, self._name, document['_key']
+                self._graph_name, self._name, key
             ),
             params=params,
             headers=headers
         )
 
-        def handler(res):
+        def response_handler(res):
             if res.status_code == 412:
                 raise DocumentRevisionError(res)
             elif res.status_code == 404 and res.error_code == 1202:
@@ -273,4 +295,4 @@ class EdgeCollection(BaseCollection):
                 raise DocumentDeleteError(res)
             return res.body['removed']
 
-        return self.handle_request(request, handler)
+        return self._execute_request(request, response_handler)

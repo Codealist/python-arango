@@ -1,22 +1,7 @@
-from abc import ABCMeta
-
-
 class APIWrapper:
-    __metaclass__ = ABCMeta
 
-    def __init__(self, connection):
-        self._conn = connection
+    def __init__(self, requester):
+        self._requester = requester
 
-    def handle_request(self,
-                       request,
-                       handler,
-                       job_class=None,
-                       use_underlying=False,
-                       **kwargs):
-        if use_underlying:
-            connection = self._conn.underlying
-        else:
-            connection = self._conn
-
-        return connection.handle_request(request, handler, job_class=job_class,
-                                         **kwargs)
+    def _execute_request(self, request, response_handler):
+        return self._requester.execute_request(request, response_handler)

@@ -4,14 +4,14 @@ Documents
 ---------
 
 **Documents** in python-arango are Python dictionaries. They can be nested to
-an arbitrary depth and contain lists. Each document must have the ``"_key"``
+an arbitrary depth and contain lists. Each document must have the "_key"
 field, whose value identifies the document uniquely within a collection. There
-is also the ``"_id"`` field, whose value identifies the document uniquely across
+is also the "_id" field, whose value identifies the document uniquely across
 *all* collections within a database.
 
 ArangoDB supports MVCC (Multiple Version Concurrency Control) and is capable
 of storing each document in multiple revisions. The revision of a document is
-distinguished by the value of the ``"_rev"`` field. For more information on
+distinguished by the value of the "_rev" field. For more information on
 documents and their associated terminologies visit this
 `page <https://docs.arangodb.com/HTTP/Document/AddressAndEtag.html>`__.
 
@@ -36,8 +36,8 @@ Here is an example of a valid document:
 .. _edge-documents:
 
 **Edge documents** or **edges** are similar to documents but with additional
-required fields ``"_from"`` and ``"_to"``. The values of these fields are the
-values of the ``"_id"`` field of the "from" and "to" vertex documents (see
+required fields "_from" and "_to". The values of these fields are the
+values of the "_id" field of the "from" and "to" vertex documents (see
 :ref:`graphs <graph-page>` for more details). Edge documents are contained in
 :ref:`edge collections <edge-collections>`.
 

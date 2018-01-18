@@ -71,9 +71,9 @@ The logging output for above would look something like this:
 
 .. code-block:: bash
 
-    [DEBUG] GET http://127.0.0.1:8529/_db/_system/_api/database 200
-    [DEBUG] GET http://127.0.0.1:8529/_db/_system/_api/endpoint 200
-    [DEBUG] GET http://127.0.0.1:8529/_db/_system/_admin/log/level 200
+    [DEBUG] GET http://127.0.0.1:8529/_db/_system/_api/database
+    [DEBUG] GET http://127.0.0.1:8529/_db/_system/_api/endpoint
+    [DEBUG] GET http://127.0.0.1:8529/_db/_system/_admin/log/level
 
 
 In order to see the full request information, turn on logging for the requests_

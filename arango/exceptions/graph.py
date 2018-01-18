@@ -26,7 +26,7 @@ class GraphTraverseError(ArangoError):
 
 
 class OrphanCollectionListError(ArangoError):
-    """Failed to retrieve the list of orphaned vertex collections."""
+    """Failed to retrieve the list of orphan vertex collections."""
 
 
 class VertexCollectionListError(ArangoError):

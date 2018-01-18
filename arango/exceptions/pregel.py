@@ -2,7 +2,7 @@ from arango.exceptions import ArangoError
 
 
 class PregelJobCreateError(ArangoError):
-    """Failed to start/create a Pregel job."""
+    """Failed to create a Pregel job."""
 
 
 class PregelJobGetError(ArangoError):
@@ -10,4 +10,4 @@ class PregelJobGetError(ArangoError):
 
 
 class PregelJobDeleteError(ArangoError):
-    """Failed to cancel/delete a Pregel job."""
+    """Failed to cancel a Pregel job."""

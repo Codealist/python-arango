@@ -135,6 +135,9 @@ def test_echo():
 
 
 def test_sleep():
+    if arango_version(arango_client) >= (3, 3):
+        return
+
     assert arango_client.sleep(0) == 0
 
     with pytest.raises(ServerSleepError):
@@ -142,15 +145,14 @@ def test_sleep():
 
 
 def test_execute():
-    major, minor = arango_version(arango_client)
+    if arango_version(arango_client) >= (3, 2):
+        return
 
-    # TODO ArangoDB 3.2 seems to be missing this API endpoint
-    if not (major == 3 and minor == 2):
-        assert arango_client.execute('return 1') == '1'
-        assert arango_client.execute('return "test"') == '"test"'
-        with pytest.raises(ServerExecuteError) as err:
-            arango_client.execute('return invalid')
-        assert 'Internal Server Error' in err.value.message
+    assert arango_client._execute_request('return 1') == '1'
+    assert arango_client._execute_request('return "test"') == '"test"'
+    with pytest.raises(ServerExecuteError) as err:
+        arango_client._execute_request('return invalid')
+    assert 'Internal Server Error' in err.value.message
 
 
 # TODO test parameters

@@ -3,7 +3,7 @@
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd $DIR
 
-VERSION=3.2.6
+VERSION=3.3.2
 NAME=ArangoDB-$VERSION
 
 echo "Downloading ArangoDB ..."
