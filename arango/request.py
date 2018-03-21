@@ -1,21 +1,41 @@
 from __future__ import absolute_import, unicode_literals
 
-from json import dumps
+import json
 
-from six import moves
+from six import moves, string_types
 
 
 class Request(object):
-    """ArangoDB API request object."""
+    """Abstraction of an API request.
+
+    :param method: HTTP method in lowercase (e.g. "post").
+    :type method: str or unicode
+    :param endpoint: API URL endpoint.
+    :type endpoint: str or unicode
+    :param headers: Request headers.
+    :type headers: dict
+    :param params: URL parameters.
+    :type params: dict
+    :param data: Request payload.
+    :type data: object
+    :param command: Transaction command.
+    :type command: str or unicode
+    :param read: Collection read during a transaction.
+    :type read: str or unicode
+    :param write: Collection written to during a transaction.
+    :type write: str or unicode
+    """
 
     __slots__ = (
         'method',
-        'url',
+        'endpoint',
         'headers',
         'params',
         'data',
         'command',
-        'auth'
+        'read',
+        'write',
+        'graph'
     )
 
     def __init__(self,
@@ -25,35 +45,41 @@ class Request(object):
                  params=None,
                  data=None,
                  command=None,
-                 auth=None):
+                 read=None,
+                 write=None):
         self.method = method
-        self.url = endpoint
+        self.endpoint = endpoint
         self.headers = headers or {}
-        self.params = params or {}
-        self.data = data
+        #self._params = params
+
+        # Covert booleans in URL params to integers
+        if params is not None:
+            for key, val in params.items():
+                if isinstance(val, bool):
+                    params[key] = int(val)
+        self.params = params
+
+        # Normalize the payload
+        if data is None:
+            self.data = None
+        elif isinstance(data, string_types):
+            self.data = data
+        else:
+            self.data = json.dumps(data)
+
         self.command = command
-        self.auth = auth
+        self.read = read
+        self.write = write
 
-    @property
-    def kwargs(self):
-        return {
-            'url': self.url,
-            'headers': self.headers,
-            'params': self.params,
-            'data': self.data,
-            'auth': self.auth
-        }
-
-    def stringify(self):
-        path = self.url
+    def __str__(self):
+        """Return the request details in string form."""
+        path = self.endpoint
         if self.params is not None:
             path += '?' + moves.urllib.parse.urlencode(self.params)
-        request_string = '{} {} HTTP/1.1'.format(self.method, path)
+        request_strings = ['{} {} HTTP/1.1'.format(self.method, path)]
         if self.headers is not None:
             for key, value in self.headers.items():
-                request_string += '\r\n{key}: {value}'.format(
-                    key=key, value=value
-                )
+                request_strings.append('{}: {}'.format(key, value))
         if self.data is not None:
-            request_string += '\r\n\r\n{}'.format(dumps(self.data))
-        return request_string
+            request_strings.append('\r\n{}'.format(self.data))
+        return '\r\n'.join(request_strings)

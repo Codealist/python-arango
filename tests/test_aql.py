@@ -2,12 +2,7 @@ from __future__ import absolute_import, unicode_literals
 
 import pytest
 
-from arango import ArangoClient
-from arango.aql import AQL
 from arango.exceptions import (
-    AsyncExecuteError,
-    BatchExecuteError,
-    ArangoError,
     AQLCacheClearError,
     AQLCacheConfigureError,
     AQLCachePropertiesError,
@@ -18,173 +13,157 @@ from arango.exceptions import (
     AQLQueryExplainError,
     AQLQueryValidateError
 )
-
-from tests.utils import (
-    generate_db_name,
-    generate_col_name,
-    generate_user_name
-)
-
-arango_client = ArangoClient()
-
-db_name = generate_db_name()
-db = arango_client.create_database(db_name)
-col_name = generate_col_name()
-db.create_collection(col_name)
-username = generate_user_name()
-user = arango_client.create_user(username, 'password')
-func_name = ''
-func_body = ''
+from tests.utils import extract
 
 
-def teardown_module(*_):
-    arango_client.delete_database(db_name, ignore_missing=True)
-    arango_client.delete_user(username, ignore_missing=True)
+def test_aql_attributes(db):
+    aql = db.aql
+    assert aql.context == 'default'
+    assert repr(aql) == '<AQL in {}>'.format(db.name)
+
+    cache = db.aql.cache
+    assert cache.context == 'default'
+    assert repr(cache) == '<AQLQueryCache in {}>'.format(db.name)
 
 
-@pytest.mark.order1
-def test_init():
-    assert isinstance(db.aql, AQL)
-    assert 'ArangoDB AQL' in repr(db.aql)
-
-
-@pytest.mark.order2
-def test_query_explain():
-    fields_to_check = [
+def test_aql_explain(db, col):
+    plan_fields = [
         'estimatedNrItems',
         'estimatedCost',
         'rules',
         'variables',
         'collections',
     ]
-
-    # Test invalid query
+    # Test explain invalid query
     with pytest.raises(AQLQueryExplainError):
         db.aql.explain('THIS IS AN INVALID QUERY')
 
-    # Test valid query (all_plans=True)
+    # Test explain valid query with all_plans set to True
     plans = db.aql.explain(
-        'FOR d IN {} RETURN d'.format(col_name),
+        'FOR d IN {} RETURN d'.format(col.name),
         all_plans=True,
         opt_rules=['-all', '+use-index-range'],
         max_plans=10
     )
+    assert len(plans) < 10
     for plan in plans:
-        for field in fields_to_check:
-            assert field in plan
+        assert all(field in plan for field in plan_fields)
 
-    # Test valid query (all_plans=False)
+    # Test explain valid query with all_plans set to False
     plan = db.aql.explain(
-        'FOR d IN {} RETURN d'.format(col_name),
+        'FOR d IN {} RETURN d'.format(col.name),
         all_plans=False,
         opt_rules=['-all', '+use-index-range']
     )
-    for field in fields_to_check:
-        assert field in plan
+    assert all(field in plan for field in plan_fields)
 
 
-@pytest.mark.order3
-def test_query_validate():
-    # Test invalid query
+def test_aql_validate(db, col):
+    # Test validate invalid query
     with pytest.raises(AQLQueryValidateError):
         db.aql.validate('THIS IS AN INVALID QUERY')
 
-    # Test valid query
-    result = db.aql.validate('FOR d IN {} RETURN d'.format(col_name))
+    # Test validate valid query
+    result = db.aql.validate('FOR d IN {} RETURN d'.format(col.name))
     assert 'ast' in result
     assert 'bindVars' in result
     assert 'collections' in result
     assert 'parsed' in result
 
 
-@pytest.mark.order4
-def test_query_execute():
-    # Test invalid AQL query
+def test_aql_execute(db, col, docs):
+    # Test execute invalid AQL query
     with pytest.raises(AQLQueryExecuteError):
         db.aql.execute('THIS IS AN INVALID QUERY')
 
-    # Test valid AQL query #1
-    db.collection(col_name).import_bulk([
-        {'_key': 'doc01'},
-        {'_key': 'doc02'},
-        {'_key': 'doc03'},
-    ])
+    # Test execute valid query
+    db.collection(col.name).import_bulk(docs)
     result = db.aql.execute(
-        'FOR d IN {} RETURN d'.format(col_name),
+        'FOR d IN {} RETURN d'.format(col.name),
         count=True,
         batch_size=1,
         ttl=10,
-        optimizer_rules=['+all']
+        optimizer_rules=['+all'],
+        cache=True,
+        fail_on_warning=False,
+        profile=False,
+        max_transaction_size=100000,
+        max_warning_count=10,
+        intermediate_commit_count=1,
+        intermediate_commit_size=1000,
+        satellite_sync_wait=False
     )
-    assert set(d['_key'] for d in result) == {'doc01', 'doc02', 'doc03'}
+    assert extract('_key', result) == extract('_key', docs)
 
-    # Test valid AQL query #2
-    db.collection(col_name).import_bulk([
-        {'_key': 'doc04', 'value': 1},
-        {'_key': 'doc05', 'value': 1},
-        {'_key': 'doc06', 'value': 3},
-    ])
+    # Test execute another valid query
     result = db.aql.execute(
-        'FOR d IN {} FILTER d.value == @value RETURN d'.format(col_name),
-        bind_vars={'value': 1},
+        'FOR d IN {} FILTER d.text == @text RETURN d'.format(col.name),
+        bind_vars={'text': 'foo'},
         count=True,
         full_count=True,
         max_plans=100
     )
-    assert set(d['_key'] for d in result) == {'doc04', 'doc05'}
+    assert extract('_key', result) == extract('_key', docs[:3])
 
 
-@pytest.mark.order5
-def test_query_function_create_and_list():
-    global func_name, func_body
+def test_aql_function_management(db, bad_db):
+    fn_group = 'functions::temperature'
+    fn_name_1 = 'functions::temperature::celsius_to_fahrenheit'
+    fn_body_1 = 'function (celsius) { return celsius * 1.8 + 32; }'
+    fn_name_2 = 'functions::temperature::fahrenheit_to_celsius'
+    fn_body_2 = 'function (fahrenheit) { return (fahrenheit - 32) / 1.8; }'
+    bad_fn_name = 'functions::temperature::should_not_exist'
+    bad_fn_body = 'function (celsius) { invalid syntax }'
 
-    assert db.aql.functions() == {}
-    func_name = 'myfunctions::temperature::celsiustofahrenheit'
-    func_body = 'function (celsius) { return celsius * 1.8 + 32; }'
-
-    # Test create AQL function
-    db.aql.create_function(func_name, func_body)
-    assert db.aql.functions() == {func_name: func_body}
-
-    # Test create AQL function again (idempotency)
-    db.aql.create_function(func_name, func_body)
-    assert db.aql.functions() == {func_name: func_body}
+    # Test list AQL functions with bad credentials
+    with pytest.raises(AQLFunctionListError):
+        bad_db.aql.functions()
 
     # Test create invalid AQL function
-    func_body = 'function (celsius) { invalid syntax }'
     with pytest.raises(AQLFunctionCreateError):
-        result = db.aql.create_function(func_name, func_body)
-        assert result is True
+        db.aql.create_function(bad_fn_name, bad_fn_body)
 
+    # Test create AQL function one
+    db.aql.create_function(fn_name_1, fn_body_1)
+    assert db.aql.functions() == {fn_name_1: fn_body_1}
 
-@pytest.mark.order6
-def test_query_function_delete_and_list():
-    # Test delete AQL function
-    result = db.aql.delete_function(func_name)
-    assert result is True
+    # Test create AQL function one again (idempotency)
+    db.aql.create_function(fn_name_1, fn_body_1)
+    assert db.aql.functions() == {fn_name_1: fn_body_1}
 
-    # Test delete missing AQL function
+    # Test create AQL function two
+    db.aql.create_function(fn_name_2, fn_body_2)
+    assert db.aql.functions() == {fn_name_1: fn_body_1, fn_name_2: fn_body_2}
+
+    # Test delete AQL function one
+    assert db.aql.delete_function(fn_name_1) is True
+    assert db.aql.functions() == {fn_name_2: fn_body_2}
+
+    # Test missing AQL function
     with pytest.raises(AQLFunctionDeleteError):
-        db.aql.delete_function(func_name)
+        db.aql.delete_function(fn_name_1)
+    assert db.aql.delete_function(fn_name_1, ignore_missing=True) is False
+    assert db.aql.functions() == {fn_name_2: fn_body_2}
 
-    # Test delete missing AQL function (ignore_missing)
-    result = db.aql.delete_function(func_name, ignore_missing=True)
-    assert result is False
+    # Test delete AQL function group
+    assert db.aql.delete_function(fn_group, group=True) is True
     assert db.aql.functions() == {}
 
 
-@pytest.mark.order7
-def test_get_query_cache_properties():
+def test_aql_cache_properties(db, bad_db):
+    # Test get AQL cache properties
     properties = db.aql.cache.properties()
     assert 'mode' in properties
     assert 'limit' in properties
 
+    # Test get AQL cache properties with bad credentials
+    with pytest.raises(AQLCachePropertiesError):
+        bad_db.aql.cache.properties()
 
-@pytest.mark.order8
-def test_set_query_cache_properties():
-    properties = db.aql.cache.configure(
-        mode='on', limit=100
-    )
+
+def test_aql_cache_configure(db, bad_db):
+    # Test get AQL cache configure
+    properties = db.aql.cache.configure(mode='on', limit=100)
     assert properties['mode'] == 'on'
     assert properties['limit'] == 100
 
@@ -192,38 +171,16 @@ def test_set_query_cache_properties():
     assert properties['mode'] == 'on'
     assert properties['limit'] == 100
 
+    # Test get AQL cache configure with bad credentials
+    with pytest.raises(AQLCacheConfigureError):
+        bad_db.aql.cache.configure(mode='on')
 
-@pytest.mark.order9
-def test_clear_query_cache():
+
+def test_aql_cache_clear(db, bad_db):
+    # Test get AQL cache clear
     result = db.aql.cache.clear()
     assert isinstance(result, bool)
 
-
-@pytest.mark.order10
-def test_aql_errors():
-    bad_db_name = generate_db_name()
-    bad_aql = arango_client.database(bad_db_name).aql
-
-    with pytest.raises(ArangoError) as err:
-        bad_aql.functions()
-    assert isinstance(err.value, AQLFunctionListError) \
-        or isinstance(err.value, AsyncExecuteError) \
-        or isinstance(err.value, BatchExecuteError)
-
-    with pytest.raises(ArangoError) as err:
-        bad_aql.cache.properties()
-    assert isinstance(err.value, AQLCachePropertiesError) \
-        or isinstance(err.value, AsyncExecuteError) \
-        or isinstance(err.value, BatchExecuteError)
-
-    with pytest.raises(ArangoError) as err:
-        bad_aql.cache.configure(mode='on')
-    assert isinstance(err.value, AQLCacheConfigureError) \
-        or isinstance(err.value, AsyncExecuteError) \
-        or isinstance(err.value, BatchExecuteError)
-
-    with pytest.raises(ArangoError) as err:
-        bad_aql.cache.clear()
-    assert isinstance(err.value, AQLCacheClearError) \
-        or isinstance(err.value, AsyncExecuteError) \
-        or isinstance(err.value, BatchExecuteError)
+    # Test get AQL cache clear with bad credentials
+    with pytest.raises(AQLCacheClearError):
+        bad_db.aql.cache.clear()

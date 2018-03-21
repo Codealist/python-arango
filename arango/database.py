@@ -2,21 +2,21 @@ from __future__ import absolute_import, unicode_literals
 
 from datetime import datetime
 
-from arango import APIWrapper
-from arango import Request
-from arango import WriteAheadLog
+from arango.api import APIWrapper
 from arango.aql import AQL
-from arango.collections import Collection
+from arango.async import AsyncExecutor
+from arango.batch import Batch
+from arango.collection import Collection
 from arango.exceptions import (
     AsyncJobClearError,
     AsyncJobListError,
     CollectionCreateError,
     CollectionDeleteError,
     CollectionListError,
+    DatabaseDeleteError,
+    DatabaseCreateError,
     DatabaseListError,
     DatabasePropertiesError,
-    DocumentGetError,
-    DocumentRevisionError,
     GraphListError,
     GraphCreateError,
     GraphDeleteError,
@@ -24,18 +24,17 @@ from arango.exceptions import (
     PregelJobDeleteError,
     PregelJobGetError,
     ServerConnectionError,
+    ServerEndpointsError,
     ServerDetailsError,
     ServerEchoError,
-    ServerExecuteError,
     ServerLogLevelError,
     ServerLogLevelSetError,
     ServerReadLogError,
     ServerReloadRoutingError,
-    ServerRequiredDBVersionError,
+    ServerTargetVersionError,
     ServerRoleError,
     ServerRunTestsError,
     ServerShutdownError,
-    ServerSleepError,
     ServerStatisticsError,
     ServerTimeError,
     ServerVersionError,
@@ -43,272 +42,398 @@ from arango.exceptions import (
     TaskDeleteError,
     TaskGetError,
     TaskListError,
-    UserAccessError,
+    TransactionExecuteError,
+    PermissionGetError,
     UserCreateError,
     UserDeleteError,
     UserGetError,
-    UserGrantAccessError,
+    PermissionUpdateError,
     UserListError,
-    UserRevokeAccessError,
+    PermissionDeleteError,
     UserReplaceError,
     UserUpdateError,
-)
+    ServerEngineError)
+from arango.foxx import Foxx
 from arango.graph import Graph
-from arango.requesters import (
-    AsyncRequester,
-    BatchRequester,
-)
+from arango.request import Request
 from arango.transaction import Transaction
-from arango.utils import HTTP_OK
+from arango.utils import is_dict
+from arango.wal import WAL
 
 
 class Database(APIWrapper):
     """ArangoDB database.
 
-    :param requester: ArangoDB API requester object.
-    :type requester: arango.requesters.Requester
+    :param connection: HTTP connection.
+    :type connection: arango.connection.Connection
+    :param executor: API executor.
+    :type executor: arango.api.APIExecutor
     """
 
-    def __init__(self, requester):
-        super(Database, self).__init__(requester)
-        self._aql = AQL(requester)
-        self._wal = WriteAheadLog(requester)
+    def __init__(self, connection, executor):
+        super(Database, self).__init__(connection, executor)
+        self._aql = AQL(connection, executor)
+        self._wal = WAL(connection, executor)
+        self._foxx = Foxx(connection, executor)
 
     def __repr__(self):
-        return '<ArangoDB database "{}">'.format(self.name)
+        return '<Database {}>'.format(self.name)
 
     def __getitem__(self, name):
-        """Return the collection object.
+        """Return the collection wrapper.
 
-        :param name: The name of the collection.
-        :type name: str | unicode
-        :return: The collection object.
-        :rtype: arango.collections.Collection
+        :param name: Collection name.
+        :type name: str or unicode
+        :return: Collection wrapper.
+        :rtype: arango.collection.Collection
         """
         return self.collection(name)
 
     @property
-    def protocol(self):
-        """Return the internet transfer protocol.
+    def name(self):
+        """Return the database name.
 
-        :return: The internet transfer protocol.
-        :rtype: str | unicode
+        :return: Database name.
+        :rtype: str or unicode
         """
-        return self._requester.protocol
-
-    @property
-    def host(self):
-        """Return the ArangoDB host.
-
-        :return: The ArangoDB host.
-        :rtype: str | unicode
-        """
-        return self._requester.host
-
-    @property
-    def port(self):
-        """Return the ArangoDB port.
-
-        :return: The ArangoDB port.
-        :rtype: int
-        """
-        return self._requester.port
+        return self._conn.database
 
     @property
     def username(self):
-        """Return the ArangoDB username.
+        """Return the username used for authentication.
 
-        :return: The ArangoDB username.
-        :rtype: str | unicode
+        :return: Username used for authentication.
+        :rtype: str or unicode
         """
-        return self._requester.username
-
-    @property
-    def password(self):
-        """Return the ArangoDB user password.
-
-        :return: The ArangoDB user password.
-        :rtype: str | unicode
-        """
-        return self._requester.password
-
-    @property
-    def http_client(self):
-        """Return the HTTP client.
-
-        :return: The HTTP client.
-        :rtype: arango.http_clients.base.BaseHTTPClient
-        """
-        return self._requester.http_client
-
-    @property
-    def logging_enabled(self):
-        """Return True if logging is enabled, False otherwise.
-
-        :return: True if logging is enabled, False otherwise.
-        :rtype: bool
-        """
-        return self._requester.logging_enabled
-
-    @property
-    def requester(self):
-        """Return the API requester object.
-
-        :return: The API requester object.
-        :rtype: arango.requesters.Requester
-        """
-        return self._requester
-
-    @property
-    def name(self):
-        """Return the name of the database.
-
-        :return: The name of the database.
-        :rtype: str | unicode
-        """
-        return self._requester.database
+        return self._conn.username
 
     @property
     def aql(self):
-        """Return the AQL object used to execute AQL statements.
+        """Return the AQL wrapper used to execute AQL statements.
 
-        Refer to :class:`arango.aql.AQL` for more information.
+        See :class:`arango.aql.AQL` for more information.
 
-        :return: The AQL object.
+        :return: AQL wrapper.
         :rtype: arango.aql.AQL
         """
         return self._aql
 
     @property
     def wal(self):
-        """Return the write-ahead log object.
+        """Return the WAL (write-ahead log) wrapper.
 
-        :return: The write-ahead log object.
-        :rtype: arango.wal.WriteAheadLog
+        See :class:`arango.wal.WAL` for more information.
+
+        :return: WAL wrapper.
+        :rtype: arango.wal.WAL
         """
         return self._wal
 
-    def verify(self):
-        """Verify the connection to ArangoDB server.
+    @property
+    def foxx(self):
+        """Return the Foxx wrapper.
 
-        :return: True if the connection is successful
-        :rtype: bool
-        :raise arango.exceptions.ServerConnectionError: If the connection to
-            the ArangoDB server fails
+        See :class:`arango.foxx.Foxx` for more information.
+
+        :return: Foxx wrapper.
+        :rtype:`arango.foxx.Foxx
         """
+        return self._foxx
 
+    def properties(self):
+        """Return the database properties.
+
+        :return: Database properties.
+        :rtype: dict
+        :raise arango.exceptions.DatabasePropertiesError: If retrieval
+            fails.
+        """
         request = Request(
-            method='head',
-            endpoint='/_api/version'
+            method='get',
+            endpoint='/_api/database/current',
         )
 
-        def response_handler(res):
-            x = res.status_code
-            if x not in HTTP_OK:
-                raise ServerConnectionError(res)
-            return True
+        def response_handler(resp):
+            if not resp.is_success:
+                raise DatabasePropertiesError(resp)
+            result = resp.body['result']
+            result['system'] = result.pop('isSystem')
+            return result
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
+
+    def begin_async(self, return_result=True):
+        """Begin async API execution.
+
+        :param return_result: If set to True, results of API calls are stored
+            server-side and instances of :class:`arango.async.AsyncJob` are
+            returned to the user for progress tracking and result retrieval.
+            If set to False, no results are stored server-side and no jobs are
+            returned to the user.
+        :type return_result: bool
+        :return: New database wrapper. API calls made using this database are
+            queued up server-side and executed asynchronously.
+        :rtype: arango.database.Database
+        """
+        return Database(self._conn, AsyncExecutor(return_result))
+
+    def begin_batch(self, return_result=True):
+        """Begin batch API execution.
+
+        :param return_result: If set to True, results of API calls are stored
+            client-side and instances of :class:`arango.batch.BatchJob` are
+            returned to the user for progress tracking and result retrieval.
+            The job instances are populated with results on commit. If set to
+            False, results are ignored and no jobs are returned to the user.
+            This saves memory when results are not required.
+        :type return_result: bool
+        :return: New database wrapper. API calls made using this database are
+            queued up client-side and executed in one go in when committed.
+        :rtype: arango.database.Database
+        """
+        return Batch(self._conn, return_result)
+
+    def begin_transaction(self, timeout=None, sync=None, return_result=True):
+        """Begin transaction.
+
+        :param timeout: Timeout on collection locks.
+        :type timeout: int
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param return_result: If set to True, API calls are queued client-side
+            and :class:`arango.transaction.TransactionJob` instances are
+            returned to user. Job instances are populated with the results on
+            commit. If set to False, requests are queued and executed, but
+            results are not saved and job objects are not returned to the user.
+        :type return_result: bool
+        """
+        return Transaction(
+            connection=self._conn,
+            timeout=timeout,
+            sync=sync,
+            return_result=return_result
+        )
+
+    def execute_transaction(self,
+                            command,
+                            params=None,
+                            read=None,
+                            write=None,
+                            sync=None,
+                            timeout=None,
+                            max_size=None,
+                            allow_implicit=None,
+                            autocommit_ops=None,
+                            autocommit_size=None):
+        """Execute a raw Javascript code in a transaction.
+
+        :param command: Javascript code to execute.
+        :type command: str or unicode
+        :param read: Names of collections read during transaction.
+            If **allow_implicit** is set to True, any undeclared collections
+            are loaded lazily.
+        :type read: [str or unicode]
+        :param write: Names of collections where data is written
+            during transaction. Transaction fails on undeclared collections.
+        :type write: [str or unicode]
+        :param params: Optional arguments passed to **action**.
+        :type params: dict
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param timeout: Timeout for waiting on collection locks. If set
+            to 0, the ArangoDB server waits indefinitely. If not set, system
+            default value is used.
+        :type timeout: int
+        :param max_size: Maximum transaction size limit in bytes. Applies only
+            to RocksDB storage engine.
+        :type max_size: int
+        :param allow_implicit: If set to True, undeclared read collections are
+            loaded lazily. If set to False, transaction fails on undeclared
+            collections.
+        :type allow_implicit: bool
+        :param autocommit_ops: Maximum number of operations after which an
+            intermediate commit is performed automatically. Applies only to
+            RocksDB storage engine.
+        :type autocommit_ops: int
+        :param autocommit_size: Maximum total size of operations after which an
+            intermediate commit is performed automatically. Applies only to
+            RocksDB storage engine.
+        :type autocommit_size: int
+        :return: Return value of the code defined in **action**.
+        :rtype: str or unicode
+        :raise arango.exceptions.TransactionExecuteError: If execution fails.
+        """
+        collections = {'allowImplicit': allow_implicit}
+        if read is not None:
+            collections['read'] = read
+        if write is not None:
+            collections['write'] = write
+
+        data = {'action': command}
+        if collections:
+            data['collections'] = collections
+        if params is not None:
+            data['params'] = params
+        if timeout is not None:
+            data['lockTimeout'] = timeout
+        if sync is not None:
+            data['waitForSync'] = sync
+        if max_size is not None:
+            data['maxTransactionSize'] = max_size
+        if autocommit_ops is not None:
+            data['intermediateCommitCount'] = autocommit_ops
+        if autocommit_size is not None:
+            data['intermediateCommitSize'] = autocommit_size
+
+        request = Request(
+            method='post',
+            endpoint='/_api/transaction',
+            data=data
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise TransactionExecuteError(resp)
+            return resp.body.get('result')
+
+        return self._execute(request, response_handler)
 
     def version(self):
-        """Return the version of the ArangoDB server.
+        """Return ArangoDB server version.
 
-        :return: The server version
-        :rtype: str | unicode
-        :raise arango.exceptions.ServerVersionError: If the server version
-            cannot be retrieved
+        :return: Server version.
+        :rtype: str or unicode
+        :raise arango.exceptions.ServerVersionError: If retrieval fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/version',
-            params={'details': False}
+            params={'details': False},
+            command='db._version(false)'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerVersionError(res)
-            return res.body['version']
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerVersionError(resp)
+            if is_dict(resp.body):
+                return resp.body['version']
+            return resp.body
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def details(self):
-        """Return the component details on the ArangoDB server.
+        """Return ArangoDB server details.
 
-        :return: The server details
+        :return: Server details
         :rtype: dict
-        :raise arango.exceptions.ServerDetailsError: If the server details
-            cannot be retrieved
+        :raise arango.exceptions.ServerDetailsError: If retrieval fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/version',
-            params={'details': True}
+            params={'details': True},
+            command='db._version(true)'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerDetailsError(res)
-            return res.body['details']
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerDetailsError(resp)
+            return resp.body.get('details', resp.body)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
-    def required_db_version(self):
-        """Return the required version of the target database.
+    def target_version(self):
+        """Return required version of target database.
 
-        :return: The required version of the target database
-        :rtype: str | unicode
-        :raise arango.exceptions.ServerRequiredDBVersionError: If the
-            required database version cannot be retrieved
+        :return: Required version of target database.
+        :rtype: str or unicode
+        :raise arango.exceptions.ServerTargetVersionError: If retrieval fails.
         """
         request = Request(
             method='get',
             endpoint='/_admin/database/target-version'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerRequiredDBVersionError(res)
-            return res.body['version']
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerTargetVersionError(resp)
+            return resp.body['version']
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
-    def databases(self, user_only=False):
-        """Return the database names.
+    def endpoints(self):
+        """Return the information about all coordinate endpoints.
 
-        :param user_only: list only the databases accessible by the user
-        :type user_only: bool
-        :return: The database names
-        :rtype: list
-        :raise arango.exceptions.DatabaseListError: If request fails
+        :return: List of endpoints.
+        :rtype: [str or unicode]
+        :raise arango.exceptions.ServerEndpointsError: If retrieval fails.
+
+        .. note::
+            This is for cluster mode only.
         """
-
-        # Get the current user's databases
-        if user_only:
-            url = '/_api/database/user'
-        else:
-            url = '/_api/database'
-
         request = Request(
             method='get',
-            endpoint=url
+            endpoint='/_api/cluster/endpoints'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise DatabaseListError(res)
-            return res.body['result']
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerEndpointsError(resp)
+            return [item['endpoint'] for item in resp.body['endpoints']]
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
+
+    def engine(self):
+        """Return the database engine information.
+
+        :return: Database engine information.
+        :rtype: str or unicode
+        :raise arango.exceptions.ServerEngineError: If retrieval fails.
+        """
+        request = Request(
+            method='get',
+            endpoint='/_api/engine',
+            command='db._engine()'
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerEngineError(resp)
+            return resp.body
+
+        return self._execute(request, response_handler)
+
+    def ping(self):
+        """Ping the ArangoDB server.
+
+        :return: Response code from server.
+        :rtype: int
+        :raise arango.exceptions.ServerConnectionError: If ping fails.
+        """
+        request = Request(
+            method='get',
+            endpoint='/_api/collection',
+        )
+
+        def response_handler(resp):
+            code = resp.status_code
+            if code in {401, 403}:
+                raise ServerConnectionError(
+                    message='bad username and/or password')
+            if not resp.is_success:
+                message = resp.error_message or 'bad server response'
+                raise ServerConnectionError(message=message)
+            return code
+
+        return self._execute(request, response_handler)
 
     def statistics(self, description=False):
         """Return the server statistics.
 
-        :return: The statistics information
+        :return: Server statistics.
         :rtype: dict
-        :raise arango.exceptions.ServerStatisticsError: If the server
-            statistics cannot be retrieved
+        :raise arango.exceptions.ServerStatisticsError: If retrieval fails.
         """
-
         if description:
             url = '/_admin/statistics-description'
         else:
@@ -319,68 +444,61 @@ class Database(APIWrapper):
             endpoint=url
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerStatisticsError(res)
-            res.body.pop('code', None)
-            res.body.pop('error', None)
-            return res.body
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerStatisticsError(resp)
+            resp.body.pop('code')
+            resp.body.pop('error')
+            return resp.body
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def role(self):
         """Return the role of the server in the cluster if any.
 
-        :return: The server role which can be "SINGLE" (the server is not
-            in a cluster), "COORDINATOR" (the server is a coordinator in
-            the cluster), "PRIMARY" (the server is a primary database in
-            the cluster), "SECONDARY" (the server is a secondary database
-            in the cluster) or "UNDEFINED" (the server role is undefined,
-            the only possible value for a single server)
-        :rtype: str | unicode
-        :raise arango.exceptions.ServerRoleError: If the server role cannot
-            be retrieved
+        :return: Server role which can be "SINGLE" (server not in a cluster),
+            "COORDINATOR" (cluster coordinator), "PRIMARY", "SECONDARY" or
+            "UNDEFINED".
+        :rtype: str or unicode
+        :raise arango.exceptions.ServerRoleError: If retrieval fails.
         """
-
         request = Request(
             method='get',
             endpoint='/_admin/server/role'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerRoleError(res)
-            return res.body.get('role')
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerRoleError(resp)
+            return resp.body.get('role')
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def time(self):
         """Return the current server system time.
 
-        :return: The server system time
+        :return: Server system time
         :rtype: datetime.datetime
-        :raise arango.exceptions.ServerTimeError: If the server time
-            cannot be retrieved
+        :raise arango.exceptions.ServerTimeError: If retrieval fails.
         """
-
         request = Request(
             method='get',
             endpoint='/_admin/time'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerTimeError(res)
-            return datetime.fromtimestamp(res.body['time'])
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerTimeError(resp)
+            return datetime.fromtimestamp(resp.body['time'])
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def echo(self):
         """Return information on the last request (headers, payload etc.)
 
-        :return: The details of the last request
+        :return: Details of the last request
         :rtype: dict
-        :raise arango.exceptions.ServerEchoError: If the last request cannot
+        :raise arango.exceptions.ServerEchoError: If last request cannot
             be retrieved from the server
         """
         request = Request(
@@ -388,103 +506,53 @@ class Database(APIWrapper):
             endpoint='/_admin/echo'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerEchoError(res)
-            return res.body
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerEchoError(resp)
+            return resp.body
 
-        return self._execute_request(request, response_handler)
-
-    def sleep(self, seconds):
-        """Suspend the execution for a specified duration before returning.
-
-        :param seconds: The number of seconds to suspend
-        :type seconds: int
-        :return: The number of seconds suspended
-        :rtype: int
-        :raise arango.exceptions.ServerSleepError: If the server cannot be
-            suspended
-        """
-        request = Request(
-            method='get',
-            endpoint='/_admin/sleep',
-            params={'duration': seconds}
-        )
-
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerSleepError(res)
-            return res.body['duration']
-
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def shutdown(self):  # pragma: no cover
         """Initiate the server shutdown sequence.
 
         :return: whether the server was shutdown successfully
         :rtype: bool
-        :raise arango.exceptions.ServerShutdownError: If the server shutdown
-            sequence cannot be initiated
+        :raise arango.exceptions.ServerShutdownError: If shutdown fails.
         """
-
         request = Request(
             method='delete',
             endpoint='/_admin/shutdown'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerShutdownError(res)
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerShutdownError(resp)
             return True
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def run_tests(self, tests):  # pragma: no cover
         """Run the available unittests on the server.
 
-        :param tests: list of files containing the test suites
-        :type tests: list
-        :return: The test results
+        :param tests: List of files containing the test suites.
+        :type tests: [str or unicode]
+        :return: Test results.
         :rtype: dict
-        :raise arango.exceptions.ServerRunTestsError: If the test suites fail
+        :raise arango.exceptions.ServerRunTestsError: If execution fails.
         """
-
         request = Request(
             method='post',
             endpoint='/_admin/test',
             data={'tests': tests}
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerRunTestsError(res)
-            return res.body
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerRunTestsError(resp)
+            return resp.body
 
-        return self._execute_request(request, response_handler)
-
-    def execute(self, program):  # pragma: no cover
-        """Execute a Javascript program on the server.
-
-        :param program: The body of the Javascript program to execute.
-        :type program: str | unicode
-        :return: The result of the execution
-        :rtype: str | unicode
-        :raise arango.exceptions.ServerExecuteError: If the program cannot
-            be executed on the server
-        """
-
-        request = Request(
-            method='post',
-            endpoint='/_admin/execute',
-            data=program
-        )
-
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerExecuteError(res)
-            return res.body
-
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def read_log(self,
                  upto=None,
@@ -499,31 +567,30 @@ class Database(APIWrapper):
         :param upto: return the log entries up to the given level (mutually
             exclusive with argument **level**), which must be "fatal",
             "error", "warning", "info" (default) or "debug"
-        :type upto: str | unicode | int
+        :type upto: str or unicode or int
         :param level: return the log entries of only the given level (mutually
             exclusive with **upto**), which must be "fatal", "error",
             "warning", "info" (default) or "debug"
-        :type level: str | unicode | int
+        :type level: str or unicode or int
         :param start: return the log entries whose ID is greater or equal to
             the given value
         :type start: int
         :param size: restrict the size of the result to the given value (this
             setting can be used for pagination)
         :type size: int
-        :param offset: The number of entries to skip initially (this setting
+        :param offset: Number of entries to skip initially (this setting
             can be setting can be used for pagination)
         :type offset: int
         :param search: return only the log entries containing the given text
-        :type search: str | unicode
+        :type search: str or unicode
         :param sort: sort the log entries according to the given fashion, which
             can be "sort" or "desc"
-        :type sort: str | unicode
-        :return: The server log entries
+        :type sort: str or unicode
+        :return: Server log entries
         :rtype: dict
-        :raise arango.exceptions.ServerReadLogError: If the server log entries
+        :raise arango.exceptions.ServerReadLogError: If server log entries
             cannot be read
         """
-
         params = dict()
         if upto is not None:
             params['upto'] = upto
@@ -546,36 +613,32 @@ class Database(APIWrapper):
             params=params
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerReadLogError(res)
-            if 'totalAmount' in res.body:
-                res.body['total_amount'] = res.body.pop('totalAmount')
-            return res.body
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerReadLogError(resp)
+            if 'totalAmount' in resp.body:
+                resp.body['total_amount'] = resp.body.pop('totalAmount')
+            return resp.body
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def log_levels(self):
         """Return the current logging levels.
 
-        :return: The current logging levels
+        :return: Current logging levels.
         :rtype: dict
-
-        .. note::
-            This method is only compatible with ArangoDB version 3.1+ only.
         """
-
         request = Request(
             method='get',
             endpoint='/_admin/log/level'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerLogLevelError(res)
-            return res.body
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerLogLevelError(resp)
+            return resp.body
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def set_log_levels(self, **kwargs):
         """Set the logging levels.
@@ -591,35 +654,31 @@ class Database(APIWrapper):
                 threads='WARNING'
             )
 
-        :return: The new logging levels
+        :return: New logging levels
         :rtype: dict
 
         .. note::
-            Keys that are not valid logger names are simply ignored.
-
-        .. note::
-            This method is only compatible with ArangoDB version 3.1+ only.
+            Keys that are not valid logger names are ignored.
         """
-
         request = Request(
             method='put',
             endpoint='/_admin/log/level',
             data=kwargs
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerLogLevelSetError(res)
-            return res.body
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerLogLevelSetError(resp)
+            return resp.body
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def reload_routing(self):
         """Reload the routing information from the collection *routing*.
 
         :return: whether the routing was reloaded successfully
         :rtype: bool
-        :raise arango.exceptions.ServerReloadRoutingError: If the routing
+        :raise arango.exceptions.ServerReloadRoutingError: If routing
             cannot be reloaded
         """
 
@@ -628,183 +687,149 @@ class Database(APIWrapper):
             endpoint='/_admin/routing/reload'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise ServerReloadRoutingError(res)
-            return 'error' not in res.body
+        def response_handler(resp):
+            if not resp.is_success:
+                raise ServerReloadRoutingError(resp)
+            return 'error' not in resp.body
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
-    def asynchronous(self, return_result=True):
-        """Return the asynchronous request object.
+    #######################
+    # Database Management #
+    #######################
 
-        Refer to :class:`arango.async.AsyncExecution` for more information.
+    def databases(self):
+        """Return the database names.
 
-        :param return_result: store and return the result
-        :type return_result: bool
-        :return: The async request object
-        :rtype: :class:`arango.async.AsyncExecution`
-        """
-        return AsyncRequester(self._requester, return_result)
-
-    def batch(self, return_result=True, commit_on_error=True,
-              submit_timeout=-1):
-        """Return the batch request object.
-
-        Refer to :class:`arango.batch.BatchExecution` for more information.
-
-        :param return_result: store and return the result
-        :type return_result: bool
-        :param commit_on_error: commit when an exception is raised
-            (this is only applicable when context managers are used)
-        :type commit_on_error: bool
-        :param submit_timeout: The timeout to use for acquiring the lock
-        necessary to submit a batch.  Only relevant in multi-threaded contexts.
-        In single threaded contexts, acquiring this lock will never fail.
-        A value of <= 0 means wait forever, a positive value indicates the
-        number of seconds to wait.
-        :type submit_timeout: int
-        :return: The batch request object
-        :rtype: :class:`arango.batch.BatchExecution`
-        """
-        return BatchRequester(self._requester, return_result, commit_on_error,
-                              submit_timeout)
-
-    def transaction(self,
-                    read=None,
-                    write=None,
-                    sync=None,
-                    timeout=None,
-                    commit_on_error=True):
-        """Return the transaction requester object.
-
-        Refer to :class:`arango.transaction.Transaction` for more information.
-
-        :param read: The name(s) of the collection(s) to read from
-        :type read: str | unicode | list
-        :param write: The name(s) of the collection(s) to write to
-        :type write: str | unicode | list
-        :param sync: Block until the operation is synchronized to disk.
-        :type sync: bool
-        :param timeout: timeout on the collection locks
-        :type timeout: int
-        :param commit_on_error: only applicable when *context managers* are
-            used to execute the transaction: If set to True, the requests
-            queued so far are committed even if an exception is raised before
-            exiting out of the context
-        :type commit_on_error: bool
-        """
-        return Transaction(
-            requester=self._requester,
-            read=read,
-            write=write,
-            timeout=timeout,
-            sync=sync,
-            commit_on_error=commit_on_error
-        )
-
-    def properties(self):
-        """Return the database properties.
-
-        :return: The database properties.
-        :rtype: dict
-        :raise arango.exceptions.DatabasePropertiesError: If the retrieval
-            fails.
+        :return: Database names.
+        :rtype: list
+        :raise arango.exceptions.DatabaseListError: If retrieval fails.
         """
         request = Request(
             method='get',
-            endpoint='/_api/database/current'
+            endpoint='/_api/database',
+            command='db._databases()'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise DatabasePropertiesError(res)
-            result = res.body['result']
-            result['system'] = result.pop('isSystem')
-            return result
+        def response_handler(resp):
+            if not resp.is_success:
+                raise DatabaseListError(resp)
+            if is_dict(resp.body):
+                return resp.body['result']
+            return resp.body
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
-    def get_document(self, document_id, rev=None, match_rev=True):
-        """Retrieve a document by its ID.
+    def create_database(self, name, users=None):
+        """Create a new database.
 
-        :param document_id: The document ID with format "{collection}/{key}".
-        :type document_id: str | unicode
-        :return: The document, or None if the document is missing
-        :rtype: dict
-        :param rev: The document revision to be compared against the revision
-            of the target document.
-        :type rev: str | unicode
-        :param match_rev: This parameter applies only when **rev** is given. If
-            set to True, ensure that the document revision matches the value of
-            **rev**. Otherwise, ensure that they do not match.
-        :type match_rev: bool
-        :raise arango.exceptions.DocumentRevisionError: If **rev** is given and
-            its value does not match the target document revision.
-        :raise arango.exceptions.DocumentGetError: If the retrieval fails.
+        :param name: Database name.
+        :type name: str or unicode
+        :param users: List of users with access to the new database, where
+            each user is represented by a dictionary with fields "username",
+            "password", "active" and "extra". If not set, only the admin and
+            current user are granted access by default. Here is an example
+            entry for parameter **users**:
+
+            .. code-block:: python
+
+                {
+                    'username': 'john',
+                    'password': 'password',
+                    'active': True,
+                    'extra': {'Department': 'IT'}
+                }
+
+        :type users: [dict]
+        :return: Database wrapper.
+        :rtype: arango.database.Database
+        :raise arango.exceptions.DatabaseCreateError: If create fails.
         """
-        headers = {}
-        if rev is not None:
-            if match_rev:
-                headers['If-Match'] = rev
-            else:
-                headers['If-None-Match'] = rev
+        data = {'name': name}
+        if users is not None:
+            data['users'] = [{
+                'username': user['username'],
+                'passwd': user['password'],
+                'active': user.get('active', True),
+                'extra': user.get('extra', {})
+            } for user in users]
 
         request = Request(
-            method='get',
-            endpoint='/_api/document/{}'.format(document_id),
-            headers=headers
+            method='post',
+            endpoint='/_api/database',
+            data=data
         )
 
-        def response_handler(res):
-            if res.status_code in {304, 412}:
-                raise DocumentRevisionError(res)
-            elif res.status_code == 404 and res.error_code == 1202:
-                return None
-            elif res.status_code in HTTP_OK:
-                return res.body
-            raise DocumentGetError(res)
+        def response_handler(resp):
+            if not resp.is_success:
+                raise DatabaseCreateError(resp)
+            return resp.body['result']
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
+
+    def delete_database(self, name, ignore_missing=False):
+        """Delete the database of the specified name.
+
+        :param name: Database name.
+        :type name: str or unicode
+        :param ignore_missing: Do not raise exception on missing database.
+        :type ignore_missing: bool
+        :return: True if the database was deleted successfully.
+        :rtype: bool
+        :raise arango.exceptions.DatabaseDeleteError: If delete fails.
+        """
+        request = Request(
+            method='delete',
+            endpoint='/_api/database/{}'.format(name)
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                if resp.status_code == 404 and ignore_missing:
+                    return False
+                raise DatabaseDeleteError(resp)
+            return resp.body['result']
+
+        return self._execute(request, response_handler)
 
     #########################
     # Collection Management #
     #########################
 
+    def collection(self, name):
+        """Return the collection wrapper.
+
+        :param name: Collection name.
+        :type name: str or unicode
+        :return: Collection wrapper.
+        :rtype: arango.collection.Collection
+        """
+        return Collection(self._conn, self._executor, name)
+
     def collections(self):
         """Return the collections in the database.
 
-        :return: The details of the collections in the database.
-        :rtype: [dict]
-        :raise arango.exceptions.CollectionListError: If the retrieval fails.
+        :return: Details of the collections in the database.
+        :rtype: [dict] or [str or unicode]
+        :raise arango.exceptions.CollectionListError: If retrieval fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/collection'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise CollectionListError(res)
+        def response_handler(resp):
+            if not resp.is_success:
+                raise CollectionListError(resp)
             return [{
                 'id': col['id'],
                 'name': col['name'],
                 'system': col['isSystem'],
-                'type': Collection.TYPES[col['type']],
-                'status': Collection.STATUSES[col['status']],
-            } for col in map(dict, res.body['result'])]
+                'type': Collection.types[col['type']],
+                'status': Collection.statuses[col['status']],
+            } for col in map(dict, resp.body['result'])]
 
-        return self._execute_request(request, response_handler)
-
-    def collection(self, name):
-        """Return the collection object.
-
-        :param name: The name of the collection.
-        :type name: str | unicode
-        :return: The collection object.
-        :rtype: arango.collections.Collection
-        """
-        return Collection(self._requester, name)
+        return self._execute(request, response_handler)
 
     def create_collection(self,
                           name,
@@ -824,8 +849,8 @@ class Database(APIWrapper):
                           replication_factor=None):
         """Create a new collection.
 
-        :param name: The name of the collection.
-        :type name: str | unicode
+        :param name: Collection name.
+        :type name: str or unicode
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
         :param compact: Whether the collection is compacted.
@@ -842,20 +867,20 @@ class Database(APIWrapper):
         :type volatile: bool
         :param key_generator: Used for generating document keys. Allowed values
             are "traditional" or "autoincrement".
-        :type key_generator: str | unicode
+        :type key_generator: str or unicode
         :param user_keys: Whether to allow users to supply the document keys.
         :type user_keys: bool
-        :param key_increment: The key increment value. Applies only when the
-            value of **key_generator** is set to "autoincrement".
+        :param key_increment: Key increment value. Applies only when the value
+            of **key_generator** is set to "autoincrement".
         :type key_increment: int
-        :param key_offset: The key offset value. Applies only when the value of
+        :param key_offset: Key offset value. Applies only when the value of
             **key_generator** is set to "autoincrement".
         :type key_offset: int
-        :param shard_fields: The field(s) used to determine the target shard.
-        :type shard_fields: [str | unicode]
-        :param shard_count: The number of shards to create.
+        :param shard_fields: Field(s) used to determine the target shard.
+        :type shard_fields: [str or unicode]
+        :param shard_count: Number of shards to create.
         :type shard_count: int
-        :param index_bucket_count: The number of buckets into which indexes
+        :param index_bucket_count: Number of buckets into which indexes
             using hash tabled are split. Yhe default is 16, and this number
             has to be a power of 2 and less than or equal to 1024. Gor very
             large collections, one should increase this to avoid long pauses
@@ -864,7 +889,7 @@ class Database(APIWrapper):
             parallel. To instance, 64 may be a sensible value for a collection
             with 100,000,000 documents.
         :type index_bucket_count: int
-        :param replication_factor: The number of copies of each shard on
+        :param replication_factor: Number of copies of each shard on
             different servers in a cluster. Allowed values are:
 
             .. code-block:: none
@@ -878,9 +903,9 @@ class Database(APIWrapper):
                    operation is reported successful.
 
         :type replication_factor: int
-        :return: The collection object.
-        :rtype: arango.collections.Collection
-        :raise arango.exceptions.CollectionCreateError: If the create fails.
+        :return: Collection wrapper.
+        :rtype: arango.collection.Collection
+        :raise arango.exceptions.CollectionCreateError: If create fails.
         """
         key_options = {'type': key_generator, 'allowUserKeys': user_keys}
         if key_increment is not None:
@@ -919,18 +944,18 @@ class Database(APIWrapper):
             data=data
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise CollectionCreateError(res)
+        def response_handler(resp):
+            if not resp.is_success:
+                raise CollectionCreateError(resp)
             return self.collection(name)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def delete_collection(self, name, ignore_missing=False, system=None):
         """Delete a collection.
 
-        :param name: The name of the collection.
-        :type name: str | unicode
+        :param name: Collection name.
+        :type name: str or unicode
         :param ignore_missing: Do not raise an exception on missing collection.
         :type ignore_missing: bool
         :param system: Whether the collection is a system collection. Only
@@ -938,7 +963,7 @@ class Database(APIWrapper):
         :type system: bool
         :return: True if the deletion was successful.
         :rtype: bool
-        :raise arango.exceptions.CollectionDeleteError: If the delete fails.
+        :raise arango.exceptions.CollectionDeleteError: If delete fails.
         """
         params = {}
         if system is not None:
@@ -950,33 +975,43 @@ class Database(APIWrapper):
             params=params
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                if not (res.status_code == 404 and ignore_missing):
-                    raise CollectionDeleteError(res)
-            return not res.body['error']
+        def response_handler(resp):
+            if not resp.is_success:
+                if not (resp.status_code == 404 and ignore_missing):
+                    raise CollectionDeleteError(resp)
+            return not resp.body['error']
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     ####################
     # Graph Management #
     ####################
 
+    def graph(self, name):
+        """Return the graph wrapper.
+
+        :param name: Graph name.
+        :type name: str or unicode
+        :return: Graph wrapper.
+        :rtype: arango.graph.Graph
+        """
+        return Graph(self._conn, self._executor, name)
+
     def graphs(self):
         """List all graphs in the database.
 
-        :return: The graphs in the database.
-        :rtype: dict
-        :raise arango.exceptions.GraphListError: If the retrieval fails.
+        :return: Graphs in the database.
+        :rtype: dict or [str or unicode]
+        :raise arango.exceptions.GraphListError: If retrieval fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/gharial'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise GraphListError(res)
+        def response_handler(resp):
+            if not resp.is_success:
+                raise GraphListError(resp)
             return [
                 {
                     'name': record['_key'],
@@ -986,20 +1021,10 @@ class Database(APIWrapper):
                     'smart': record.get('isSmart'),
                     'smart_field': record.get('smartGraphAttribute'),
                     'shard_count': record.get('numberOfShards')
-                } for record in map(dict, res.body['graphs'])
+                } for record in map(dict, resp.body['graphs'])
             ]
 
-        return self._execute_request(request, response_handler)
-
-    def graph(self, name):
-        """Return the graph object.
-
-        :param name: The name of the graph.
-        :type name: str | unicode
-        :return: The graph object.
-        :rtype: arango.graph.Graph
-        """
-        return Graph(self._requester, name)
+        return self._execute(request, response_handler)
 
     def create_graph(self,
                      name,
@@ -1010,8 +1035,8 @@ class Database(APIWrapper):
                      shard_count=None):
         """Create a new graph in the database.
 
-        :param name: The name of the new graph.
-        :type name: str | unicode
+        :param name: Graph name.
+        :type name: str or unicode
         :param edge_definitions: List of edge definitions. An edge definition
             should look like this:
 
@@ -1024,26 +1049,26 @@ class Database(APIWrapper):
                 }
 
         :type edge_definitions: [dict]
-        :param orphan_collections: The names of additional vertex collections.
-        :type orphan_collections: [str | unicode]
+        :param orphan_collections: Names of additional vertex collections.
+        :type orphan_collections: [str or unicode]
         :param smart: If set to True, sharding is enabled (see parameter
             **smart_field** below). This is only for the enterprise version of
             ArangoDB.
         :type smart: bool
-        :param smart_field: The document field used to shard the vertices of
+        :param smart_field: Document field used to shard the vertices of
             the graph. To use this, parameter **smart** must be set to True and
             every vertex in the graph must have the smart field. This is only
             for the enterprise version of ArangoDB.
-        :type smart_field: str | unicode
-        :param shard_count: The number of shards used for every collection in
+        :type smart_field: str or unicode
+        :param shard_count: Number of shards used for every collection in
             the graph. To use this, parameter **smart** must be set to True and
             every vertex in the graph must have the smart field. The number
             cannot be modified later once set. This is only for the enterprise
             version of ArangoDB.
         :type shard_count: int
-        :return: The graph object.
+        :return: Graph wrapper.
         :rtype: arango.graph.Graph
-        :raise arango.exceptions.GraphCreateError: If the create fails.
+        :raise arango.exceptions.GraphCreateError: If create fails.
         """
         data = {'name': name}
         if edge_definitions is not None:
@@ -1067,18 +1092,18 @@ class Database(APIWrapper):
             data=data
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise GraphCreateError(res)
-            return Graph(self._requester, name)
+        def response_handler(resp):
+            if not resp.is_success:
+                raise GraphCreateError(resp)
+            return Graph(self._conn, self._executor, name)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def delete_graph(self, name, ignore_missing=False, drop_collections=None):
         """Drop the graph of the given name from the database.
 
-        :param name: The name of the graph to delete/drop.
-        :type name: str | unicode
+        :param name: Name of the graph to delete/drop.
+        :type name: str or unicode
         :param ignore_missing: Ignore HTTP 404 (graph not found) from the
             server. If this is set to True an exception is not raised.
         :type ignore_missing: bool
@@ -1088,12 +1113,10 @@ class Database(APIWrapper):
         :type drop_collections: bool
         :return: Whether the deletion was successful.
         :rtype: bool
-        :raise arango.exceptions.GraphDeleteError: If the graph cannot be
+        :raise arango.exceptions.GraphDeleteError: If graph cannot be
             deleted from the database
         """
-
         params = {}
-
         if drop_collections is not None:
             params['dropCollections'] = drop_collections
 
@@ -1103,59 +1126,59 @@ class Database(APIWrapper):
             params=params
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                if not (res.status_code == 404 and ignore_missing):
-                    raise GraphDeleteError(res)
-            return not res.body['error']
+        def response_handler(resp):
+            if not resp.is_success:
+                if not (resp.status_code == 404 and ignore_missing):
+                    raise GraphDeleteError(resp)
+            return not resp.body['error']
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
-    ##########################
-    # Server Task Management #
-    ##########################
+    ###################
+    # Task Management #
+    ###################
 
     def tasks(self):
         """Return all server tasks that are currently active.
 
-        :return: The server tasks that are currently active.
+        :return: Server tasks that are currently active.
         :rtype: [dict]
-        :raise arango.exceptions.TaskListError: If the retrieval fails.
+        :raise arango.exceptions.TaskListError: If retrieval fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/tasks'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise TaskListError(res)
-            return res.body
+        def response_handler(resp):
+            if not resp.is_success:
+                raise TaskListError(resp)
+            return resp.body
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def task(self, task_id):
         """Return the active server task with the given id.
 
-        :param task_id: The ID of the server task
-        :type task_id: str | unicode
-        :return: The details on the active server task
+        :param task_id: ID of the server task
+        :type task_id: str or unicode
+        :return: Details on the active server task
         :rtype: dict
-        :raise arango.exceptions.TaskGetError: If the retrieval fails.
+        :raise arango.exceptions.TaskGetError: If retrieval fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/tasks/{}'.format(task_id)
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise TaskGetError(res)
-            res.body.pop('code', None)
-            res.body.pop('error', None)
-            return res.body
+        def response_handler(resp):
+            if not resp.is_success:
+                raise TaskGetError(resp)
+            resp.body.pop('code', None)
+            resp.body.pop('error', None)
+            return resp.body
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     # TODO verify which arguments are optional
     def create_task(self,
@@ -1167,23 +1190,23 @@ class Database(APIWrapper):
                     task_id=None):
         """Create a new server task.
 
-        :param name: The name of the server task.
-        :type name: str | unicode
-        :param command: The Javascript code to execute.
-        :type command: str | unicode
-        :param params: The parameters passed into the command.
+        :param name: Name of the server task.
+        :type name: str or unicode
+        :param command: Javascript code to execute.
+        :type command: str or unicode
+        :param params: Parameters passed into the command.
         :type params: dict
-        :param period: The number of seconds to wait between executions. If set
+        :param period: Number of seconds to wait between executions. If set
             to 0, the new task will be "timed", meaning it will execute only
             once and be deleted automatically afterwards.
         :type period: int
-        :param offset: The initial delay before execution in seconds.
+        :param offset: Initial delay before execution in seconds.
         :type offset: int
         :param task_id: Pre-defined ID for the new server task.
-        :type task_id: str | unicode
-        :return: The details on the new task.
+        :type task_id: str or unicode
+        :return: Details on the new task.
         :rtype: dict
-        :raise arango.exceptions.TaskCreateError: If the create fails.
+        :raise arango.exceptions.TaskCreateError: If create fails.
         """
         data = {
             'name': name,
@@ -1207,38 +1230,38 @@ class Database(APIWrapper):
             data=data
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise TaskCreateError(res)
-            res.body.pop('code', None)
-            res.body.pop('error', None)
-            return res.body
+        def response_handler(resp):
+            if not resp.is_success:
+                raise TaskCreateError(resp)
+            resp.body.pop('code', None)
+            resp.body.pop('error', None)
+            return resp.body
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def delete_task(self, task_id, ignore_missing=False):
         """Delete the server task specified by ID.
 
-        :param task_id: The ID of the server task.
-        :type task_id: str | unicode
+        :param task_id: ID of the server task.
+        :type task_id: str or unicode
         :param ignore_missing: Do not raise an exception on missing task.
         :type ignore_missing: bool
         :return: True if the task was successfully deleted.
         :rtype: bool
-        :raise arango.exceptions.TaskDeleteError: If the delete fails.
+        :raise arango.exceptions.TaskDeleteError: If delete fails.
         """
         request = Request(
             method='delete',
             endpoint='/_api/tasks/{}'.format(task_id)
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                if not (res.status_code == 404 and ignore_missing):
-                    raise TaskDeleteError(res)
-            return not res.body['error']
+        def response_handler(resp):
+            if not resp.is_success:
+                if not (resp.status_code == 404 and ignore_missing):
+                    raise TaskDeleteError(resp)
+            return not resp.body['error']
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     ###################
     # User Management #
@@ -1247,69 +1270,67 @@ class Database(APIWrapper):
     def users(self):
         """Return the details of all users.
 
-        :return: The details of all users.
-        :rtype: [dict]
-        :raise arango.exceptions.UserListError: If the retrieval fails.
+        :return: Details of all users or just the usernames.
+        :rtype: [dict] or [str or unicode]
+        :raise arango.exceptions.UserListError: If retrieval fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/user'
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise UserListError(res)
+        def response_handler(resp):
+            if not resp.is_success:
+                raise UserListError(resp)
             return [{
                 'username': record['user'],
                 'active': record['active'],
                 'extra': record['extra'],
-            } for record in res.body['result']]
+            } for record in resp.body['result']]
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def user(self, username):
         """Return the details of a user.
 
-        :param username: The details of the user
-        :type username: str | unicode
-        :return: The user details
+        :param username: Details of the user
+        :type username: str or unicode
+        :return: User details
         :rtype: dict
-        :raise arango.exceptions.UserGetError: If the retrieval fails
+        :raise arango.exceptions.UserGetError: If retrieval fails
         """
         request = Request(
             method='get',
             endpoint='/_api/user/{}'.format(username)
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise UserGetError(res)
+        def response_handler(resp):
+            if not resp.is_success:
+                raise UserGetError(resp)
             return {
-                'username': res.body['user'],
-                'active': res.body['active'],
-                'extra': res.body['extra']
+                'username': resp.body['user'],
+                'active': resp.body['active'],
+                'extra': resp.body['extra']
             }
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
-    def create_user(self, username, password, active=None, extra=None):
+    def create_user(self, username, password, active=True, extra=None):
         """Create a new user.
 
-        :param username: The new username.
-        :type username: str | unicode
-        :param password: The user's password.
-        :type password: str | unicode
+        :param username: New username.
+        :type username: str or unicode
+        :param password: Password.
+        :type password: str or unicode
         :param active: Whether the user is active.
         :type active: bool
         :param extra: Any extra data on the user.
         :type extra: dict
-        :return: The details of the new user.
+        :return: Details of the new user.
         :rtype: dict
-        :raise arango.exceptions.UserCreateError: If the create fails.
+        :raise arango.exceptions.UserCreateError: If create fails.
         """
-        data = {'user': username, 'passwd': password}
-        if active is not None:
-            data['active'] = active
+        data = {'user': username, 'passwd': password, 'active': active}
         if extra is not None:
             data['extra'] = extra
 
@@ -1319,31 +1340,31 @@ class Database(APIWrapper):
             data=data
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise UserCreateError(res)
+        def response_handler(resp):
+            if not resp.is_success:
+                raise UserCreateError(resp)
             return {
-                'username': res.body['user'],
-                'active': res.body['active'],
-                'extra': res.body['extra'],
+                'username': resp.body['user'],
+                'active': resp.body['active'],
+                'extra': resp.body['extra'],
             }
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def update_user(self, username, password=None, active=None, extra=None):
         """Update an existing user.
 
-        :param username: The name of the existing user.
-        :type username: str | unicode
-        :param password: The user's new password.
-        :type password: str | unicode
+        :param username: Username.
+        :type username: str or unicode
+        :param password: New password.
+        :type password: str or unicode
         :param active: Whether the user is active.
         :type active: bool
         :param extra: Any extra data on the user.
         :type extra: dict
-        :return: The details of the updated user.
+        :return: Details of the updated user.
         :rtype: dict
-        :raise arango.exceptions.UserUpdateError: If the update fails.
+        :raise arango.exceptions.UserUpdateError: If update fails.
         """
         data = {}
         if password is not None:
@@ -1359,31 +1380,31 @@ class Database(APIWrapper):
             data=data
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise UserUpdateError(res)
+        def response_handler(resp):
+            if not resp.is_success:
+                raise UserUpdateError(resp)
             return {
-                'username': res.body['user'],
-                'active': res.body['active'],
-                'extra': res.body['extra'],
+                'username': resp.body['user'],
+                'active': resp.body['active'],
+                'extra': resp.body['extra'],
             }
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def replace_user(self, username, password, active=None, extra=None):
         """Replace an existing user.
 
-        :param username: The name of the existing user.
-        :type username: str | unicode
-        :param password: The user's new password.
-        :type password: str | unicode
+        :param username: Username.
+        :type username: str or unicode
+        :param password: User's new password.
+        :type password: str or unicode
         :param active: Whether the user is active.
         :type active: bool
         :param extra: Any extra data on the user.
         :type extra: dict
-        :return: The details of the replaced user.
+        :return: Details of the replaced user.
         :rtype: dict
-        :raise arango.exceptions.UserReplaceError: If the replace fails.
+        :raise arango.exceptions.UserReplaceError: If replace fails.
         """
         data = {'user': username, 'passwd': password}
         if active is not None:
@@ -1397,129 +1418,151 @@ class Database(APIWrapper):
             data=data
         )
 
-        def response_handler(res):
-            if res.status_code in HTTP_OK:
+        def response_handler(resp):
+            if resp.is_success:
                 return {
-                    'username': res.body['user'],
-                    'active': res.body['active'],
-                    'extra': res.body['extra'],
+                    'username': resp.body['user'],
+                    'active': resp.body['active'],
+                    'extra': resp.body['extra'],
                 }
-            raise UserReplaceError(res)
+            raise UserReplaceError(resp)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def delete_user(self, username, ignore_missing=False):
         """Delete an existing user.
 
-        :param username: The name of the existing user.
-        :type username: str | unicode
+        :param username: Username.
+        :type username: str or unicode
         :param ignore_missing: Do not raise an exception on missing user.
         :type ignore_missing: bool
         :return: True if the operation was successful, False if the user was
             missing and **ignore_missing** was set to True.
         :rtype: bool
-        :raise arango.exceptions.UserDeleteError: If the delete fails.
+        :raise arango.exceptions.UserDeleteError: If delete fails.
         """
         request = Request(
             method='delete',
             endpoint='/_api/user/{user}'.format(user=username)
         )
 
-        def response_handler(res):
-            if res.status_code in HTTP_OK:
+        def response_handler(resp):
+            if resp.is_success:
                 return True
-            elif res.status_code == 404 and ignore_missing:
+            elif resp.status_code == 404 and ignore_missing:
                 return False
-            raise UserDeleteError(res)
+            raise UserDeleteError(resp)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
-    def user_access(self, username, full=False):
-        """Return a user's access details for databases and collections.
+    def permissions(self, username):
+        """Return the user permissions for all databases and collections.
 
-        :param username: The name of the user.
-        :type username: str | unicode
-        :param full: If set to True, full set of access levels for all
-            databases and collections for the user are returned.
-        :type full: bool
-        :return: The names of the databases and collections the user has
-            access to and the access details.
+        :param username: Username.
+        :type username: str or unicode
+        :return: Permissions for all databases and collections.
         :rtype: dict
-        :raise: arango.exceptions.UserAccessError: If the retrieval fails.
+        :raise: arango.exceptions.PermissionGetError: If retrieval fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/user/{}/database'.format(username),
-            params={'full': full}
+            params={'full': True}
         )
 
-        def response_handler(res):
-            if res.status_code in HTTP_OK:
-                return res.body['result']
-            raise UserAccessError(res)
+        def response_handler(resp):
+            if resp.is_success:
+                return resp.body['result']
+            raise PermissionGetError(resp)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
-    def grant_user_access(self, username, database=None):
-        """Grant user access to a database.
+    def permission(self, username, database, collection=None):
+        """Return the user permission for a specific database or collection.
 
-        :param username: The name of the user.
-        :type username: str | unicode
-        :param database: The name of the database. If not specified, the name
-            of the current database is used.
-        :type database: str | unicode
+        :param username: Username.
+        :type username: str or unicode
+        :param database: Database name.
+        :type database: str or unicode
+        :param collection: Collection name.
+        :type collection: str or unicode
+        :return: Permission for given database or collection.
+        :rtype: str or unicode
+        :raise: arango.exceptions.PermissionGetError: If retrieval fails.
+        """
+        endpoint = '/_api/user/{}/database/{}'.format(username, database)
+        if collection is not None:
+            endpoint += '/' + collection
+        request = Request(method='get', endpoint=endpoint)
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise PermissionGetError(resp)
+            return resp.body['result']
+
+        return self._execute(request, response_handler)
+
+    def update_permission(self,
+                          username,
+                          permission,
+                          database,
+                          collection=None):
+        """Update user permission for a specific database or collection.
+
+        :param username: Username.
+        :type username: str or unicode
+        :param database: Database name.
+        :type database: str or unicode
+        :param collection: Collection name.
+        :type collection: str or unicode
+        :param permission: Allowed values are "rw" (read and write), "ro"
+            (read only) or "none" (no access).
+        :type permission: str or unicode
         :return: True if the access was successfully granted.
         :rtype: bool
-        :raise arango.exceptions.UserGrantAccessError: If the operation fails.
-
-        .. note::
-            Appropriate permissions are required to execute this method.
+        :raise arango.exceptions.PermissionUpdateError: If operation fails.
         """
-        if database is None:
-            database = self.name
+        endpoint = '/_api/user/{}/database/{}'.format(username, database)
+        if collection is not None:
+            endpoint += '/' + collection
 
         request = Request(
             method='put',
-            endpoint='/_api/user/{}/database/{}'.format(username, database),
-            data={'grant': 'rw'}
+            endpoint=endpoint,
+            data={'grant': permission}
         )
 
-        def response_handler(res):
-            if res.status_code in HTTP_OK:
+        def response_handler(resp):
+            if resp.is_success:
                 return True
-            raise UserGrantAccessError(res)
+            raise PermissionUpdateError(resp)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
-    def revoke_user_access(self, username, database=None):
-        """Revoke user access to a database.
+    def delete_permission(self, username, database, collection=None):
+        """Clear user permission for a specific database or collection.
 
-        :param username: The name of the user.
-        :type username: str | unicode
-        :param database: The name of the database. If not specified, the name
-            of the current database is used.
-        :type database: str | unicode
-        :return: True if the access was successfully revoked.
+        :param username: Username.
+        :type username: str or unicode
+        :param database: Database name.
+        :type database: str or unicode
+        :param collection: Collection name.
+        :type collection: str or unicode
+        :return: True if the permission was successfully cleared.
         :rtype: bool
-        :raise arango.exceptions.UserRevokeAccessError: If the revoke fails.
-
-        .. note::
-            Appropriate permissions are required to execute this method.
+        :raise arango.exceptions.PermissionDeleteError: If clear fails.
         """
-        if database is None:
-            database = self.name
+        endpoint = '/_api/user/{}/database/{}'.format(username, database)
+        if collection is not None:
+            endpoint += '/' + collection
+        request = Request(method='delete', endpoint=endpoint)
 
-        request = Request(
-            method='delete',
-            endpoint='/_api/user/{}/database/{}'.format(username, database)
-        )
-
-        def response_handler(res):
-            if res.status_code in HTTP_OK:
+        def response_handler(resp):
+            if resp.is_success:
                 return True
-            raise UserRevokeAccessError(res)
+            raise PermissionDeleteError(resp)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     ########################
     # Async Job Management #
@@ -1528,13 +1571,13 @@ class Database(APIWrapper):
     def async_jobs(self, status, count=None):
         """Return the IDs of asynchronous jobs with the given status.
 
-        :param status: The job status ("pending" or "done").
-        :type status: str | unicode
-        :param count: The maximum number of job IDs to return.
+        :param status: Job status ("pending" or "done").
+        :type status: str or unicode
+        :param count: Maximum number of job IDs to return.
         :type count: int
         :return: List of job IDs.
-        :rtype: [str | unicode]
-        :raise arango.exceptions.AsyncJobListError: If the retrieval fails.
+        :rtype: [str or unicode]
+        :raise arango.exceptions.AsyncJobListError: If retrieval fails.
         """
         params = {}
         if count is not None:
@@ -1546,15 +1589,15 @@ class Database(APIWrapper):
             params=params
         )
 
-        def response_handler(res):
-            if res.status_code in HTTP_OK:
-                return res.body
-            raise AsyncJobListError(res)
+        def response_handler(resp):
+            if resp.is_success:
+                return resp.body
+            raise AsyncJobListError(resp)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def clear_async_jobs(self, threshold=None):
-        """Clear asynchronous job results from the server.
+        """Clear async job results from the server.
 
         :param threshold: If specified, only the job results created prior to
             the threshold (a unix timestamp) are deleted. Otherwise, all job
@@ -1562,7 +1605,7 @@ class Database(APIWrapper):
         :type threshold: int
         :return: True if the job result were deleted successfully.
         :rtype: bool
-        :raise arango.exceptions.AsyncJobClearError: If the clear fails.
+        :raise arango.exceptions.AsyncJobClearError: If delete fails.
 
         .. note::
             Async jobs currently queued or running are not stopped.
@@ -1581,47 +1624,47 @@ class Database(APIWrapper):
             params=params
         )
 
-        def response_handler(res):
-            if res.status_code in HTTP_OK:
+        def response_handler(resp):
+            if resp.is_success:
                 return True
-            raise AsyncJobClearError(res)
+            raise AsyncJobClearError(resp)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
-    ###############
-    # Pregel Jobs #
-    ###############
+    #########################
+    # Pregel Job Management #
+    #########################
 
     def pregel_job(self, job_id):
         """Return the details of a Pregel job.
 
         :param job_id: Pregel job ID.
         :type job_id: int
-        :return: The details of the Pregel job.
+        :return: Details of the Pregel job.
         :rtype: dict
-        :raise arango.exceptions.PregelJobGetError: If the lookup fails.
+        :raise arango.exceptions.PregelJobGetError: If lookup fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/control_pregel/{}'.format(job_id)
         )
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise PregelJobGetError(res)
-            if 'edgeCount' in res.body:
-                res.body['edge_count'] = res.body.pop('edgeCount')
-            if 'receivedCount' in res.body:
-                res.body['received_count'] = res.body.pop('receivedCount')
-            if 'sendCount' in res.body:
-                res.body['send_count'] = res.body.pop('sendCount')
-            if 'totalRuntime' in res.body:
-                res.body['total_runtime'] = res.body.pop('totalRuntime')
-            if 'vertexCount' in res.body:
-                res.body['vertex_count'] = res.body.pop('vertexCount')
-            return res.body
+        def response_handler(resp):
+            if not resp.is_success:
+                raise PregelJobGetError(resp)
+            if 'edgeCount' in resp.body:
+                resp.body['edge_count'] = resp.body.pop('edgeCount')
+            if 'receivedCount' in resp.body:
+                resp.body['received_count'] = resp.body.pop('receivedCount')
+            if 'sendCount' in resp.body:
+                resp.body['send_count'] = resp.body.pop('sendCount')
+            if 'totalRuntime' in resp.body:
+                resp.body['total_runtime'] = resp.body.pop('totalRuntime')
+            if 'vertexCount' in resp.body:
+                resp.body['vertex_count'] = resp.body.pop('vertexCount')
+            return resp.body
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def create_pregel_job(self,
                           algorithm,
@@ -1630,19 +1673,20 @@ class Database(APIWrapper):
                           max_gss=None,
                           thread_count=None,
                           async_mode=None,
-                          result_field=None):
-        """Start a Pregel job.
+                          result_field=None,
+                          alg_params=None):
+        """Start a new Pregel job.
 
-        :param algorithm: The name of the algorithm (e.g. "pagerank").
-        :type algorithm: str | unicode
-        :param graph: The name of the graph.
-        :type graph: str | unicode
+        :param algorithm: Algorithm (e.g. "pagerank").
+        :type algorithm: str or unicode
+        :param graph: Graph name.
+        :type graph: str or unicode
         :param store: If set to True, the Pregel engine writes results back to
-            the database. Otherwise you can query the results via AQL.
+            the database. If set to False, the results can be queried via AQL.
         :type store: bool
         :param max_gss: Maximum number of global iterations for the algorithm.
         :type max_gss: int
-        :param thread_count: The number of parallel threads to use per worker.
+        :param thread_count: Number of parallel threads to use per worker.
             This does not influence the number of threads used to load or store
             data from the database (this depends on the number of shards).
         :type thread_count: int
@@ -1652,10 +1696,12 @@ class Database(APIWrapper):
         :type async_mode: bool
         :param result_field: If specified, most algorithms will write their
             results into the given field.
-        :type result_field: str | unicode
+        :type result_field: str or unicode
+        :param alg_params: Other algorithm parameters.
+        :type alg_params: dict
         :return: Pregel job ID.
         :rtype: int
-        :raise arango.exceptions.PregelJobCreateError: If the create fails.
+        :raise arango.exceptions.PregelJobCreateError: If create fails.
         """
         data = {
             'algorithm': algorithm,
@@ -1674,7 +1720,7 @@ class Database(APIWrapper):
         if result_field is not None:
             algorithm_params['resultField'] = result_field
         if algorithm_params:
-            data['params'] = algorithm_params
+            data['params'] = alg_params
 
         request = Request(
             method='post',
@@ -1682,12 +1728,12 @@ class Database(APIWrapper):
             data=data
         )
 
-        def response_handler(res):
-            if res.status_code in HTTP_OK:
-                return res.body
-            raise PregelJobCreateError(res)
+        def response_handler(resp):
+            if resp.is_success:
+                return resp.body
+            raise PregelJobCreateError(resp)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)
 
     def delete_pregel_job(self, job_id):
         """Cancel a Pregel job.
@@ -1696,16 +1742,16 @@ class Database(APIWrapper):
         :type job_id: int
         :return: True if the Pregel job was cancelled successfully.
         :rtype: bool
-        :raise arango.exceptions.PregelJobDeleteError: If the cancel fails.
+        :raise arango.exceptions.PregelJobDeleteError: If cancel fails.
         """
         request = Request(
             method='delete',
             endpoint='/_api/control_pregel/{}'.format(job_id)
         )
 
-        def response_handler(res):
-            if res.status_code in HTTP_OK:
+        def response_handler(resp):
+            if resp.is_success:
                 return True
-            raise PregelJobDeleteError(res)
+            raise PregelJobDeleteError(resp)
 
-        return self._execute_request(request, response_handler)
+        return self._execute(request, response_handler)

@@ -2,425 +2,233 @@ from __future__ import absolute_import, unicode_literals
 
 import pytest
 
-from arango import ArangoClient
-from arango.collections.standard import Collection
-from arango.exceptions import TransactionError
-
-from tests.utils import (
-    generate_db_name,
-    generate_col_name
+from arango.database import Database
+from arango.exceptions import (
+    TransactionBadStateError,
+    TransactionExecuteError,
+    TransactionJobResultError
 )
-
-arango_client = ArangoClient()
-db_name = generate_db_name()
-db = arango_client.create_database(db_name)
-col_name = generate_col_name()
-col = db.create_collection(col_name)
-
-doc1 = {'_key': '1', 'data': {'val': 100}}
-doc2 = {'_key': '2', 'data': {'val': 200}}
-doc3 = {'_key': '3', 'data': {'val': 300}}
-doc4 = {'_key': '4', 'data': {'val': 400}}
-doc5 = {'_key': '5', 'data': {'val': 500}}
-test_docs = [doc1, doc2, doc3, doc4, doc5]
-test_doc_keys = [d['_key'] for d in test_docs]
+from arango.utils import is_str
+from tests.utils import clean, extract
 
 
-def get_test_docs():
-    return [t.copy() for t in test_docs]
+# noinspection PyUnresolvedReferences
+def test_transaction_attributes(db, col, docs):
+    with db.begin_transaction() as txn:
+        assert is_str(txn.id)
+        assert isinstance(txn.db, Database)
+        assert txn.db.context == 'transaction'
+        assert txn.jobs == []
+        assert txn.status == 'pending'
+        job = txn.db.collection(col.name).insert_many(docs)
+
+    assert txn.jobs == [job]
+    assert txn.status == 'done'
+    assert '<Transaction {}>'.format(txn.id) == repr(txn)
+    assert '<TransactionJob {}>'.format(job.id) == repr(job)
+    assert extract('_key', col.all()) == extract('_key', docs)
 
 
-def teardown_module(*_):
-    arango_client.delete_database(db_name, ignore_missing=True)
+def test_transaction_execute_with_result(sys_db, db, col, docs):
+    # Test DB level API methods
+    with sys_db.begin_transaction(return_result=True) as txn:
+        job01 = txn.db.engine()
+        job02 = txn.db.version()
+        job03 = txn.db.details()
+        job04 = txn.db.databases()
+
+    assert job01.result() == sys_db.engine()
+    assert job02.result() == sys_db.version()
+    assert set(job03.result()).issubset(set(sys_db.details()))
+    assert set(job04.result()) == set(sys_db.databases())
+
+    # Test collection level API methods
+    with db.begin_transaction(return_result=True) as txn:
+        txn_col = txn.db.collection(col.name)
+        job01 = txn_col.properties()
+        job02 = txn_col.statistics()
+        job03 = txn_col.revision()
+        job04 = txn_col.checksum()
+        job05 = txn_col.unload()
+        job06 = txn_col.load()
+
+    assert set(job01.result()).issubset(set(col.properties()))
+    assert set(job02.result()).issubset(set(col.statistics()))
+    assert is_str(job03.result())  # TODO returning wrong revision
+    assert job04.result() == col.checksum()
+    assert job05.result() is True
+    assert job06.result() is True
+
+    # Test document level API methods
+    with db.begin_transaction(return_result=True) as txn:
+        txn_col = txn.db.collection(col.name)
+        job01 = txn_col.insert_many(docs, sync=True)
+        job02 = txn_col.count()
+        job03 = txn_col.ids()
+        job04 = txn_col.keys()
+        job05 = txn_col.has(docs[0])
+        job06 = txn_col.get(docs[0])
+        job07 = txn_col.get_many(docs)
+        job08 = txn_col.find({'text': 'foo'}, offset=1, limit=1)
+        job09 = txn_col.all(skip=4, limit=3)
+        job10 = txn_col.random()
+
+        new_docs = [{'_key': d['_key'], 'a': 1} for d in docs]
+        job11 = txn_col.update_many(new_docs, return_new=True)
+        job12 = txn_col.update_match({'a': 1}, {'a': 2})
+
+        new_docs = [{'_key': d['_key'], 'a': 3} for d in docs]
+        job13 = txn_col.replace_many(new_docs, return_new=True)
+        job14 = txn_col.replace_match({'a': 3}, {'a': 4})
+
+        job15 = txn_col.delete_many(['1', '2'], return_old=True)
+        job16 = txn_col.count()
+        job17 = txn_col.delete_match({'a': 4})
+        job18 = txn_col.count()
+
+        doc = docs[0].copy()
+        job19 = txn_col.insert(doc, return_new=True)
+        doc['a'] = 1
+        job20 = txn_col.update(doc, return_new=True)
+        doc['a'] = 2
+        job21 = txn_col.replace(doc, return_new=True)
+        job22 = txn_col.delete(doc, return_old=True)
+        job23 = txn_col.count()
+
+    assert extract('_key', job01.result()) == extract('_key', docs)
+    assert job02.result() == len(docs)
+    col_ids = ['{}/{}'.format(col.name, doc['_key']) for doc in docs]
+    assert sorted(job03.result()) == sorted(col_ids)
+    assert sorted(job04.result()) == extract('_key', docs)
+    assert job05.result() is True
+    assert clean(job06.result()) == clean(docs[0])
+    assert clean(job07.result()) == clean(docs)
+    assert len(job08.result()) == 1
+    assert len(job09.result()) == 2
+    assert clean(job10.result()) in clean(docs)
+    assert all(d['new']['a'] == 1 for d in job11.result())
+    assert job12.result() == len(docs)
+    assert all(d['new']['a'] == 3 for d in job13.result())
+    assert job14.result() == len(docs)
+    assert extract('_key', job15.result()) == ['1', '2']
+    assert job16.result() == 4
+    assert job17.result() == 4
+    assert job18.result() == 0
+    assert 'a' not in job19.result()['new']
+    assert job20.result()['new']['a'] == 1
+    assert job21.result()['new']['a'] == 2
+    assert job22.result()['old']['a'] == 2
+    assert job23.result() == 0
+
+    # Test vertex level API methods
+    with db.begin_transaction(return_result=True) as txn:
+        pass
+
+def test_transaction_execute_without_result(db, col, docs):
+    with db.begin_transaction(return_result=False) as txn:
+        txn_col = txn.db.collection(col.name)
+        assert txn_col.insert(docs[0]) is None
+        assert txn_col.delete(docs[0]) is None
+        assert txn_col.insert(docs[1]) is None
+        assert txn_col.delete(docs[1]) is None
+        assert txn_col.insert(docs[2]) is None
+
+    assert txn.jobs is None
+    assert txn.status == 'done'
+    assert extract('_key', col.all()) == extract('_key', [docs[2]])
 
 
-def setup_function(*_):
-    col.truncate()
+def test_transaction_empty_commit(db):
+    txn = db.begin_transaction()
+    assert txn.status == 'pending'
+
+    assert list(txn.commit()) == []
+    assert txn.status == 'done'
 
 
-def test_init():
-    txn = db.transaction(
-        read=col_name,
-        write=col_name,
-        sync=True,
-        timeout=1000,
-    )
-    assert txn.type == 'transaction'
-    assert 'ArangoDB transaction {}'.format(txn.id) in repr(txn)
-    assert isinstance(txn.collection('test'), Collection)
+def test_transaction_double_commit(db, col):
+    txn = db.begin_transaction()
+    txn.db.collection(col.name).insert({})
+    assert txn.status == 'pending'
+
+    # Test first commit
+    txn.commit()
+    assert txn.status == 'done'
+    assert len(col) == 1
+    random_doc = col.random()
+
+    # Test second commit which should fail
+    with pytest.raises(TransactionBadStateError) as err:
+        txn.commit()
+    assert txn.status == 'done'
+    assert len(col) == 1
+    assert col.random() == random_doc
+    assert 'committed already' in str(err.value)
 
 
-def test_execute_without_params():
-    txn = db.transaction(write=col_name)
-    result = txn._execute_request(
-        command='''
-        function () {{
-            var db = require('internal').db;
-            db.{col}.save({{ '_key': '1', 'val': 1}});
-            db.{col}.save({{ '_key': '2', 'val': 2}});
-            return 'success without params!';
-        }}
-        '''.format(col=col_name),
-        sync=False,
-        timeout=1000
-    )
-    assert result == 'success without params!'
-    assert '1' in col and col['1']['val'] == 1
-    assert '2' in col and col['2']['val'] == 2
+def test_transaction_action_after_commit(db, col):
+    with db.begin_transaction() as transaction:
+        transaction.db.collection(col.name).insert({})
+
+    # Test insert after the transaction has been committed
+    with pytest.raises(TransactionBadStateError) as err:
+        transaction.db.collection(col.name).insert({})
+    assert 'committed already' in str(err.value)
+    assert len(col) == 1
+    assert transaction.status == 'done'
 
 
-def test_execute_with_params():
-    txn = db.transaction(write=col_name)
-    result = txn._execute_request(
+def test_transaction_execute_error(bad_db, col, docs):
+    transaction = bad_db.begin_transaction(return_result=True)
+    transaction.db.collection(col.name).insert_many(docs)
+    assert transaction.status == 'pending'
+
+    # Test transaction execute with bad credentials
+    with pytest.raises(TransactionExecuteError):
+        transaction.commit()
+    assert len(col) == 0
+    assert transaction.status == 'done'
+
+
+def test_transaction_job_result_not_ready(db, col, docs):
+    transaction = db.begin_transaction(return_result=True)
+    job = transaction.db.collection(col.name).insert_many(docs)
+    assert transaction.status == 'pending'
+
+    # Test get job result before commit with raise_errors set to True
+    with pytest.raises(TransactionJobResultError):
+        job.result(raise_errors=True)
+
+    # Test get job result before commit with raise_errors set to False
+    with pytest.raises(TransactionJobResultError):
+        job.result(raise_errors=False)
+
+    # Test commit to make sure it still works after the errors
+    assert list(transaction.commit()) == [job]
+    assert len(job.result()) == len(docs)
+    assert extract('_key', col.all()) == extract('_key', docs)
+
+
+def test_transaction_execute_raw(db, col, docs):
+    doc = docs[0]
+    key = doc['_key']
+    result = db.execute_transaction(
         command='''
         function (params) {{
             var db = require('internal').db;
-            db.{col}.save({{ '_key': '1', 'val': params.one }});
-            db.{col}.save({{ '_key': '2', 'val': params.two }});
-            return 'success with params!';
-        }}'''.format(col=col_name),
-        params={'one': 3, 'two': 4}
+            db.{col}.save({{'_key': params.key, 'val': 1}});
+            return true;
+        }}
+        '''.format(col=col.name),
+        params={'key': key},
+        write=[col.name],
+        read=[col.name],
+        sync=False,
+        timeout=1000,
+        max_size=100000,
+        allow_implicit=True,
+        autocommit_ops=10,
+        autocommit_size=10000
     )
-    assert result == 'success with params!'
-    assert col['1']['val'] == 3
-    assert col['2']['val'] == 4
-
-
-def test_execute_with_errors():
-    txn = db.transaction(write=col_name)
-    bad_col_name = generate_col_name()
-    with pytest.raises(TransactionError):
-        txn._execute_request(
-            command='''
-                function (params) {{
-                var db = require('internal').db;
-                db.{col}.save({{ '_key': '1', 'val': params.one }});
-                db.{col}.save({{ '_key': '2', 'val': params.two }});
-                return 'this transaction should fail!';
-            }}'''.format(col=bad_col_name),
-            params={'one': 3, 'two': 4}
-        )
-
-
-def test_unsupported_methods():
-    txn = db.transaction(write=col_name)
-
-    with pytest.raises(TransactionError):
-        txn.collection(col_name).statistics()
-
-    with pytest.raises(TransactionError):
-        txn.collection(col_name).properties()
-
-    with pytest.raises(TransactionError):
-        txn.collection(col_name).checksum()
-
-
-def test_transaction_error():
-    with pytest.raises(TransactionError):
-        with db.transaction(write=col_name) as txn:
-            txn_col = txn.collection(col_name)
-            txn_col.truncate()
-            txn_col.insert(doc1)
-            txn_col.insert(doc1)
-
-
-def test_commit_on_error():
-    try:
-        with db.transaction(write=col_name, commit_on_error=True) as txn:
-            txn_col = txn.collection(col_name)
-            txn_col.insert(doc1)
-            txn_col.insert(doc2)
-            raise ValueError
-    except ValueError:
-        pass
-    assert len(col) == 2
-    assert doc1['_key'] in col
-    assert doc2['_key'] in col
-    assert doc3['_key'] not in col
-
-
-def test_collection_methods():
-    # Set up test documents
-    col.import_bulk(test_docs)
-
-    with db.transaction(write=col_name) as txn:
-        txn.collection(col_name).truncate()
-    assert len(col) == 0
-
-
-def test_insert_documents():
-    # Test document insert in transaction
-    with db.transaction(write=col_name) as txn:
-        txn_col = txn.collection(col_name)
-        txn_col.insert(doc1)
-        txn_col.insert(doc2)
-        txn_col.insert(doc3)
-
-    assert len(col) == 3
-    assert col['1']['data']['val'] == 100
-    assert col['2']['data']['val'] == 200
-    assert col['3']['data']['val'] == 300
-
-    # Test document insert_many in transaction
-    with db.transaction(write=col_name) as txn:
-        txn_col = txn.collection(col_name)
-        txn_col.truncate()
-        txn_col.insert_many(test_docs, sync=True)
-    assert len(col) == 5
-    assert col['1']['data']['val'] == 100
-    assert col['2']['data']['val'] == 200
-    assert col['3']['data']['val'] == 300
-    assert col['4']['data']['val'] == 400
-    assert col['5']['data']['val'] == 500
-
-    # Test document insert_many in transaction
-    with pytest.raises(TransactionError):
-        with db.transaction(write=col_name) as txn:
-            txn_col = txn.collection(col_name)
-            txn_col.truncate()
-            txn_col.insert(doc1)
-            # This should thrown an error
-            txn_col.insert(doc1)
-    # Transaction should be rolled back
-    assert len(col) == 5
-    assert col['1']['data']['val'] == 100
-    assert col['2']['data']['val'] == 200
-    assert col['3']['data']['val'] == 300
-    assert col['4']['data']['val'] == 400
-    assert col['5']['data']['val'] == 500
-
-
-def test_update_documents():
-    # Test document update in transaction
-    with db.transaction(write=col_name) as txn:
-        txn_col = txn.collection(col_name)
-        txn_col.insert_many(test_docs)
-        d1, d2, d3, _, _ = get_test_docs()
-        d1['data'] = None
-        d2['data'] = {'foo': 600}
-        d3['data'] = {'foo': 600}
-        txn_col.update(d1, keep_none=False, sync=True)
-        txn_col.update(d2, merge=False, sync=True)
-        txn_col.update(d3, merge=True, sync=True)
-    assert len(col) == 5
-    assert 'data' not in col['1']
-    assert col['2']['data'] == {'foo': 600}
-    assert col['3']['data'] == {'val': 300, 'foo': 600}
-
-    # Test document update_many in transaction
-    with db.transaction(write=col_name) as txn:
-        txn_col = txn.collection(col_name)
-        txn_col.truncate()
-        txn_col.insert_many(test_docs)
-        d1, d2, d3, _, _ = get_test_docs()
-        d1['data'] = None
-        d2['data'] = {'foo': 600}
-        d3['data'] = {'foo': 600}
-        txn_col.update_many([d1, d2], keep_none=False, merge=False)
-        txn_col.update_many([d3], keep_none=False, merge=True)
-    assert len(col) == 5
-    assert 'data' not in col['1']
-    assert col['2']['data'] == {'foo': 600}
-    assert col['3']['data'] == {'val': 300, 'foo': 600}
-
-    # Test document update_match in transaction
-    with db.transaction(write=col_name) as txn:
-        txn_col = txn.collection(col_name)
-        txn_col.truncate()
-        txn_col.insert_many(test_docs)
-        txn_col.update_match({'_key': '1'}, {'data': 700})
-        txn_col.update_match({'_key': '5'}, {'data': 800})
-        txn_col.update_match({'_key': '7'}, {'data': 900})
-    assert len(col) == 5
-    assert col['1']['data'] == 700
-    assert col['5']['data'] == 800
-
-
-def test_update_documents_with_revisions():
-    # Set up test document
-    col.insert(doc1)
-
-    # Test document update with revision check
-    with db.transaction(write=col_name) as txn:
-        txn_col = txn.collection(col_name)
-        new_doc = doc1.copy()
-        new_doc['data'] = {'val': 999}
-        old_rev = col['1']['_rev']
-        new_doc['_rev'] = old_rev + '000'
-        txn_col.update(new_doc, check_rev=False)
-    assert col['1']['_rev'] != old_rev
-    assert col['1']['data'] == {'val': 999}
-
-    # Test document update without revision check
-    with pytest.raises(TransactionError):
-        col.insert(doc2)
-        with db.transaction(write=col_name) as txn:
-            txn_col = txn.collection(col_name)
-            new_doc = doc2.copy()
-            new_doc['data'] = {'bar': 'baz'}
-            old_rev = col['2']['_rev']
-            new_doc['_rev'] = old_rev + '000'
-            txn_col.update(new_doc, check_rev=True)
-    assert col['2']['_rev'] == old_rev
-    assert col['2']['data'] != {'bar': 'baz'}
-
-
-def test_replace_documents():
-    # Test document replace in transaction
-    with db.transaction(write=col_name) as txn:
-        txn_col = txn.collection(col_name)
-        txn_col.insert_many(test_docs)
-        d1, d2, d3, _, _ = get_test_docs()
-        d1['data'] = None
-        d2['data'] = {'foo': 600}
-        d3['data'] = {'bar': 600}
-        txn_col.replace(d1, sync=True)
-        txn_col.replace(d2, sync=True)
-        txn_col.replace(d3, sync=True)
-    assert len(col) == 5
-    assert col['1']['data'] is None
-    assert col['2']['data'] == {'foo': 600}
-    assert col['3']['data'] == {'bar': 600}
-
-    # Test document replace_many in transaction
-    with db.transaction(write=col_name) as txn:
-        txn_col = txn.collection(col_name)
-        txn_col.truncate()
-        txn_col.insert_many(test_docs)
-        d1, d2, d3, _, _ = get_test_docs()
-        d1['data'] = None
-        d2['data'] = {'foo': 600}
-        d3['data'] = {'bar': 600}
-        txn_col.replace_many([d1, d2])
-        txn_col.replace_many([d3])
-    assert len(col) == 5
-    assert col['1']['data'] is None
-    assert col['2']['data'] == {'foo': 600}
-    assert col['3']['data'] == {'bar': 600}
-
-    # Test document replace_match in transaction
-    with db.transaction(write=col_name) as txn:
-        txn_col = txn.collection(col_name)
-        txn_col.truncate()
-        txn_col.insert_many(test_docs)
-        txn_col.replace_match({'_key': '1'}, {'data': 700})
-        txn_col.replace_match({'_key': '5'}, {'data': 800})
-        txn_col.replace_match({'_key': '7'}, {'data': 900})
-    assert len(col) == 5
-    assert col['1']['data'] == 700
-    assert col['5']['data'] == 800
-
-
-def test_replace_documents_with_revisions():
-    # Set up test document
-    col.insert(doc1)
-
-    # TODO does not seem to work with 3.1
-    # Test document replace without revision check
-    # with db.transaction(write=col_name) as txn:
-    #     txn_col = txn.collection(col_name)
-    #     new_doc = doc1.copy()
-    #     new_doc['data'] = {'val': 999}
-    #     old_rev = col['1']['_rev']
-    #     new_doc['_rev'] = old_rev + '000'
-    #     txn_col.replace(new_doc, check_rev=False)
-    # assert col['1']['_rev'] != old_rev
-    # assert col['1']['data'] == {'val': 999}
-
-    # Test document replace with revision check
-    with pytest.raises(TransactionError):
-        col.insert(doc2)
-        with db.transaction(write=col_name) as txn:
-            txn_col = txn.collection(col_name)
-            new_doc = doc2.copy()
-            new_doc['data'] = {'bar': 'baz'}
-            old_rev = col['2']['_rev']
-            new_doc['_rev'] = old_rev + '000'
-            txn_col.replace(new_doc, check_rev=True)
-    assert col['2']['_rev'] == old_rev
-    assert col['2']['data'] != {'bar': 'baz'}
-
-
-def test_delete_documents():
-    # Test document delete in transaction
-    with db.transaction(write=col_name) as txn:
-        txn_col = txn.collection(col_name)
-        txn_col.insert_many(test_docs)
-        d1, d2, d3, _, _ = get_test_docs()
-        txn_col.delete(d1, sync=True)
-        txn_col.delete(d2['_key'], sync=True)
-        txn_col.delete(d3['_key'], sync=False)
-    assert len(col) == 2
-    assert '4' in col
-    assert '5' in col
-
-    # Test document delete_many in transaction
-    with db.transaction(
-        write=col_name,
-        timeout=10000,
-        commit_on_error=True
-    ) as txn:
-        txn_col = txn.collection(col_name)
-        txn_col.truncate()
-        txn_col.insert_many(test_docs)
-        txn_col.delete_many([doc1, doc2, doc3], sync=True)
-        txn_col.delete_many([doc3, doc4, doc5], sync=False)
-    assert len(col) == 0
-
-    # Test document delete_match in transaction
-    with db.transaction(
-        write=col_name,
-        timeout=10000,
-        commit_on_error=True
-    ) as txn:
-        txn_col = txn.collection(col_name)
-        txn_col.truncate()
-        txn_col.insert_many(test_docs)
-        new_docs = get_test_docs()
-        for doc in new_docs:
-            doc['val'] = 100
-        txn_col.update_many(new_docs)
-        txn_col.delete_match({'val': 100}, limit=2, sync=True)
-    assert len(col) == 3
-
-
-def test_delete_documents_with_revision():
-    # Set up test document
-    col.insert(doc1)
-
-    # TODO does not seem to work in 3.1
-    # Test document delete without revision check
-    # with db.transaction(write=col_name) as txn:
-    #     txn_col = txn.collection(col_name)
-    #     new_doc = doc1.copy()
-    #     new_doc['_rev'] = col['1']['_rev'] + '000'
-    #     txn_col.delete(new_doc, check_rev=False)
-    # assert len(col) == 0
-
-    # Test document delete with revision check
-    col.insert(doc2)
-    with pytest.raises(TransactionError):
-        with db.transaction(write=col_name) as txn:
-            txn_col = txn.collection(col_name)
-            new_doc = doc2.copy()
-            new_doc['_rev'] = col['2']['_rev'] + '000'
-            txn_col.replace(new_doc, check_rev=True)
-    assert len(col) == 2
-
-
-def test_bad_collections():
-    with pytest.raises(TransactionError):
-        with db.transaction(
-            write=['missing'],
-            timeout=10000
-        ) as txn:
-            txn_col = txn.collection(col_name)
-            txn_col.insert(doc1)
-
-    with pytest.raises(TransactionError):
-        with db.transaction(
-            read=[col_name],
-            timeout=10000
-        ) as txn:
-            txn_col = txn.collection(col_name)
-            txn_col.insert(doc2)
+    assert result is True
+    assert doc in col and col[key]['val'] == 1

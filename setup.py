@@ -4,9 +4,9 @@ import sys
 from arango import version
 
 if sys.version_info < (3, 5):
-    requires = ['requests', 'six']
+    install_requires = ['requests', 'six']
 else:
-    requires = ['requests', 'six', 'aiohttp']
+    install_requires = ['requests', 'six', 'aiohttp']
 
 setup(
     name='python-arango',
@@ -17,7 +17,7 @@ setup(
     url='https://github.com/joowani/python-arango',
     packages=find_packages(exclude=['tests']),
     include_package_data=True,
-    install_requires=requires,
+    install_requires=install_requires,
     tests_require=['pytest', 'mock', 'flake8'],
     license='MIT',
     classifiers=[

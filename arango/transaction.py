@@ -1,200 +1,266 @@
 from __future__ import absolute_import, unicode_literals
 
 from uuid import uuid4
-from collections import deque
 
-from arango.requesters.base import Requester
-from arango import Request
-from arango.utils import HTTP_OK
-from arango.exceptions import TransactionError
+import arango.database
+from arango.exceptions import (
+    TransactionBadStateError,
+    TransactionExecuteError,
+    TransactionJobResultError,
+    TransactionJobQueueError)
+from arango.api import APIExecutor
+from arango.request import Request
+from arango.response import Response
 
 
-class Transaction(Requester):
-    """ArangoDB transaction object.
+class TransactionExecutor(APIExecutor):
+    """Executes transaction API requests.
 
-    API requests made in a transaction are queued in memory and executed as a
-    whole in a single HTTP call to ArangoDB server.
+    :param transaction: Transaction object.
+    :type transaction: arango.transaction.Transaction
+    """
 
-    :param requester: ArangoDB API requester object.
-    :type requester: arango.requesters.Requester
-    :param read: The name(s) of the collection(s) to read from
-    :type read: str | unicode | list
-    :param write: The name(s) of the collection(s) to write to
-    :type write: str | unicode | list
+    def __init__(self, transaction):
+        self._transaction = transaction
+
+    # noinspection PyProtectedMember
+    def execute(self, _, request, response_handler):
+        return self._transaction._add_request(request, response_handler)
+
+
+class Transaction(object):
+    """Transaction state.
+
+    :param connection: HTTP connection.
+    :type connection: arango.connection.Connection
+    :param timeout: Timeout on collection locks.
+    :type timeout: int
     :param sync: Block until the operation is synchronized to disk.
     :type sync: bool
-    :param timeout: timeout on the collection locks
-    :type timeout: int
-    :param commit_on_error: only applicable when *context managers* are used
-        to execute the transaction: If set to True, the requests queued so
-        far are committed even if an exception is raised before exiting out of
-        the context
-    :type commit_on_error: bool
-
-    .. note::
-        Only writes are possible at the moment in a transaction.
+    :param return_result: If set to True, API requests are queued client-side
+        and :class:`arango.transaction.TransactionJob` instances are returned
+        to user. Job instances are populated with the results on commit. If set
+        to False, requests are queued and executed, but results are not saved
+        and job objects are not returned to the user.
+    :type return_result: bool
     """
 
     def __init__(self,
-                 requester,
-                 read=None,
-                 write=None,
-                 sync=None,
+                 connection,
                  timeout=None,
-                 commit_on_error=False):
-        super(Transaction, self).__init__(
-            protocol=requester.protocol,
-            host=requester.host,
-            port=requester.port,
-            username=requester.username,
-            password=requester.password,
-            http_client=requester.http_client,
-            database=requester.database,
-        )
-        self._type = 'transaction'
+                 sync=None,
+                 return_result=True):
         self._id = uuid4().hex
-        self._actions = []
-        self._collections = {}
-        if read is not None:
-            self._collections['read'] = read
-        if write is not None:
-            self._collections['write'] = write
-        self._sync = sync
+        self._status = 'pending'
+        self._conn = connection
         self._timeout = timeout
-        self._commit_on_error = commit_on_error
-        self._parent = requester
+        self._sync = sync
+        self._return_result = return_result
+        self._queue = []
+        self._executor = TransactionExecutor(self)
+        self._database = arango.database.Database(self._conn, self._executor)
 
     def __repr__(self):
-        return '<ArangoDB transaction {}>'.format(self._id)
+        return '<Transaction {}>'.format(self._id)
 
     def __enter__(self):
         return self
 
     def __exit__(self, exception, *_):
-        if exception is None or self._commit_on_error:
-            return self.commit()
+        if exception is None:
+            self.commit()
+
+    def _verify_no_commit(self):
+        if self._status == 'done':
+            raise TransactionBadStateError(
+                message='transaction {} committed already.'.format(self._id))
+
+    def _add_request(self, request, response_handler):
+        self._verify_no_commit()
+        if request.command is None:
+            raise TransactionJobQueueError(
+                message='method not allowed in transactions')
+
+        job = TransactionJob(response_handler)
+        self._queue.append((request, job))
+        return job if self._return_result else None
 
     @property
     def id(self):
-        """Return the UUID of the transaction.
+        """Return the transaction ID.
 
-        :return: The UUID of the transaction
+        :return: Transaction ID.
         :rtype: str | unicode
         """
         return self._id
 
-    def execute_request(self, request, response_handler):
-        """Handle the incoming request and response handler.
+    @property
+    def status(self):
+        """Return the transaction status.
 
-        :param request: The API request queued as part of the transaction, and
-            executed only when the current transaction is committed via method
-            :func:`arango.transaction.Transaction.commit`.
-        :type request: arango.request.Request
-        :param response_handler: The response handler.
-        :type response_handler: callable
+        If the transaction is not committed, the status is set to "pending".
+        If it is committed, the status is changed to "done".
+
+        :return: Batch status.
+        :rtype: str | unicode
         """
-        if request.command is None:
-            raise TransactionError('The method does not support transactions.')
-        self._actions.append(request.command)
+        return self._status
 
+    @property
+    def timeout(self):
+        return self._timeout
+
+    @property
+    def sync(self):
+        return self._sync
+
+    @property
+    def db(self):
+        """Return the database wrapper for transaction.
+
+        :return: Database wrapper.
+        :rtype: arango.database.Database
+        """
+        return self._database
+
+    @property
+    def jobs(self):
+        """Return the jobs in this transaction.
+
+        :return: Transaction jobs.
+        :rtype: [arango.transaction.TransactionJob]
+        """
+        if not self._return_result:
+            return None
+        return [job for _, job in self._queue]
+
+    # noinspection PyProtectedMember
     def commit(self):
-        """Execute the queued API requests in one atomic step.
+        """Execute the queued requests in a transaction.
 
-        :return: The result of the transaction.
-        :rtype: arango.jobs.Job
-        :raise arango.exceptions.TransactionError: If the commit fails.
+        If **return_result** was set to True during the initialization of the
+        executor, the :class:`arango.transaction.TransactionJob` instances
+        are automatically populated with the results.
+
+        :return: List of transaction jobs.
+        :rtype: [arango.transaction.TransactionJob]
+
+        :raise arango.exceptions.TransactionExecuteError: If commit fails.
         """
-        action_results = ['a' + uuid4().hex for _ in self._actions]
+        self._verify_no_commit()
+        self._status = 'done'
+        if len(self._queue) == 0:
+            return self.jobs
 
-        action_strings = deque()
-        action_strings.append('db = require("internal").db;\n')
+        write_collections = set()
+        read_collections = set()
 
-        for i in range(len(self._actions)):
-            action_strings.append('var ')
-            action_strings.append(action_results[i])
-            action_strings.append(' = ')
-            action_strings.append(self._actions[i])
-            action_strings.append(';\n')
+        # Buffer for building the transaction command
+        cmd_buffer = ['var db = require("internal").db', 'var result = {}']
 
-        action_strings.append('return [')
-        for label in action_results:
-            action_strings.append(label)
-            action_strings.append(', ')
+        # Build the transaction request payload from the queued jobs
+        for req, job in self._queue:
+            if req.write is not None:
+                write_collections.add(req.write)
+            if req.read is not None:
+                read_collections.add(req.read)
+            cmd_buffer.append('result["{}"] = {}'.format(job.id, req.command))
+        cmd_buffer.append('return result;')
 
-        if len(action_results) > 0:
-            action_strings.pop()
-
-        action_strings.append('];\n')
-
-        action = ''.join(action_strings)
-
-        request = Request(
-            method='post',
-            endpoint='/_api/transaction',
-            data={
-                'collections': self._collections,
-                'action': 'function () {{ {} }}'.format(action)
-            },
-            params={
-                'lockTimeout': self._timeout,
-                'waitForSync': self._sync,
-            }
-        )
-
-        self._actions = ['db = require("internal").db']
-
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise TransactionError(res)
-            return res.body.get('result')
-
-        return self._execute_request(request, response_handler)
-
-    def execute(self, command, params=None, sync=None, timeout=None):
-        """Execute raw Javascript code in this transaction.
-
-        :param command: The raw Javascript code.
-        :type command: str | unicode
-        :param params: Optional arguments passed into the code.
-        :type params: dict
-        :param sync: Block until the operation is synchronized to disk. This
-            overrides the **sync** value set during the initialization of the
-            transaction object.
-        :type sync: bool
-        :param timeout: Timeout on collection locks. This overrides the value
-            value set during the initialization of the transaction object.
-        :type timeout: int
-        :return: The result of the transaction.
-        :rtype: dict
-        :raise arango.exceptions.TransactionError: If the transaction fails.
-        """
         data = {
-            'collections': self._collections,
-            'action': command
+            'action': 'function () {{ {} }}'.format(';'.join(cmd_buffer)),
+            'collections': {
+                'read': list(read_collections),
+                'write': list(write_collections)
+            }
         }
-
-        if timeout is None:
-            timeout = self._timeout
-        if timeout is not None:
-            data['lockTimeout'] = timeout
-
-        if sync is None:
-            sync = self._sync
-        if sync is not None:
-            data['waitForSync'] = sync
-
-        if params is not None:
-            data['params'] = params
+        if self._timeout is not None:
+            data['lockTimeout'] = self._timeout
+        if self._sync is not None:
+            data['waitForSync'] = self._sync
 
         request = Request(
             method='post',
             endpoint='/_api/transaction',
-            data=data
+            data=data,
         )
+        resp = self._conn.send_request(request)
 
-        def response_handler(res):
-            if res.status_code not in HTTP_OK:
-                raise TransactionError(res)
-            return res.body.get('result')
+        if not resp.is_success:
+            raise TransactionExecuteError(resp)
+        if not self._return_result:
+            return None
+        result = resp.body['result']
+        for req, job in self._queue:
+            job._response = Response(
+                method=req.method,
+                url=self._conn.url_prefix + req.endpoint,
+                headers={},
+                status_code=200,
+                status_text='OK',
+                raw_body=result.get(job.id)
+            )
+            job._status = 'done'
+        return self.jobs
 
-        return self._execute_request(request, response_handler)
+
+class TransactionJob(object):
+    """Transaction API call job.
+
+    :param response_handler: HTTP response handler.
+    :type response_handler: callable
+    """
+
+    __slots__ = ['_id', '_status', '_response', '_response_handler']
+
+    def __init__(self, response_handler):
+        self._id = uuid4().hex
+        self._status = 'pending'
+        self._response = None
+        self._response_handler = response_handler
+
+    def __repr__(self):
+        return '<TransactionJob {}>'.format(self._id)
+
+    @property
+    def id(self):
+        """Return the job ID.
+
+        :return: Job ID.
+        :rtype: str or unicode
+        """
+        return self._id
+
+    @property
+    def status(self):
+        """Return the transaction job status.
+
+        :return: Transaction job status.
+        :rtype: str or unicode
+        """
+        return self._status
+
+    def result(self, raise_errors=False):
+        """Return the result of the transaction job is available.
+
+        :param raise_errors: If set to True, any exception raised during the
+            job execution is propagated up. If set to False, the exception is
+            not raised but returned as an object.
+        :type raise_errors: bool
+        :return: Transaction job result.
+        :rtype: object
+        :raise arango.exceptions.TransactionJobResultError: If result is not
+            available. For example, the transaction was not committed yet.
+        :raise arango.exceptions.ArangoError: If **raise_errors* was set to
+            True and the execution failed, the exception is propagated up.
+        """
+        if self._status == 'pending':
+            raise TransactionJobResultError(message='result not available yet')
+        try:
+            result = self._response_handler(self._response)
+        except Exception as error:
+            if raise_errors:
+                raise
+            return error
+        else:
+            return result

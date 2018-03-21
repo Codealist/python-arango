@@ -3,7 +3,7 @@
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd $DIR
 
-VERSION=3.3.2
+VERSION=3.3.4
 NAME=ArangoDB-$VERSION
 
 echo "Downloading ArangoDB ..."
@@ -42,5 +42,4 @@ fi
 
 echo "Waiting until ArangoDB is ready on port 8529 ..."
 sleep 10
-
 echo "ArangoDB is up!"
