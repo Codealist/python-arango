@@ -1,5 +1,7 @@
 from __future__ import absolute_import, unicode_literals
 
+__all__ = ['Response']
+
 import json
 
 
@@ -9,17 +11,17 @@ class Response(object):
     Returned by :class:`arango.http.connection.BlockingHTTPConnection`.
 
     :param method: HTTP method in lowercase.
-    :type method: str or unicode
+    :type method: str | unicode
     :param url: Request URL.
-    :type url: str or unicode
+    :type url: str | unicode
     :param headers: Response headers.
     :type headers: dict
     :param status_code: HTTP status code.
     :type status_code: int
     :param status_text: HTTP status text (reason).
-    :type status_text: str or unicode
+    :type status_text: str | unicode
     :param raw_body: Raw response body.
-    :type raw_body: str or unicode
+    :type raw_body: str | unicode
     """
 
     __slots__ = (
@@ -58,14 +60,16 @@ class Response(object):
         else:
             self._error_code = None
             self._error_message = None
-        self._is_success = 200 <= status_code < 300
+
+        http_ok = 200 <= status_code < 300
+        self._is_success = http_ok and self._error_code is None
 
     @property
     def method(self):
         """Return the HTTP method in lowercase.
 
         :return: HTTP method (e.g. "post").
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return self._method
 
@@ -74,7 +78,7 @@ class Response(object):
         """Return the request URL.
 
         :return: Request URL.
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return self._url
 
@@ -101,7 +105,7 @@ class Response(object):
         """Return the HTTP status text (reason).
 
         :return: Status text (reason).
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return self._status_text
 
@@ -119,7 +123,7 @@ class Response(object):
         """Return the raw response body.
 
         :return: Raw response body.
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return self._raw_body
 
@@ -128,7 +132,7 @@ class Response(object):
         """Return the ArangoDB error code.
 
         :return: ArangoDB error code.
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return self._error_code
 
@@ -137,7 +141,7 @@ class Response(object):
         """Return the ArangoDB error message.
 
         :return: ArangoDB error message.
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return self._error_message
 

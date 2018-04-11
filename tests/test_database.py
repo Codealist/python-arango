@@ -2,17 +2,16 @@ from __future__ import absolute_import, unicode_literals
 
 from datetime import datetime
 
-import pytest
 from six import string_types
 
-from arango.collection import Collection
 from arango.exceptions import (
-    CollectionCreateError,
-    CollectionDeleteError,
-    CollectionListError,
+    DatabaseCreateError,
+    DatabaseDeleteError,
+    DatabaseListError,
     DatabasePropertiesError,
     ServerDetailsError,
     ServerEchoError,
+    ServerEndpointsError,
     ServerLogLevelError,
     ServerLogLevelSetError,
     ServerReadLogError,
@@ -22,54 +21,55 @@ from arango.exceptions import (
     ServerStatisticsError,
     ServerTimeError,
     ServerVersionError,
-    ServerEndpointsError,
-    DatabaseListError,
-    DatabaseCreateError,
-    DatabaseDeleteError
-)
-from tests.utils import (
-    generate_database_name,
-    generate_collection_name,
-    extract)
+    ServerEngineError)
+from tests.helpers import assert_raises, generate_db_name
 
 
-def test_database_properties(db, bad_db, username):
-    assert repr(db) == '<Database {}>'.format(db.name)
+def test_database_attributes(db, username):
+    assert db.context in ['default', 'async', 'batch', 'transaction']
     assert db.username == username
+    assert db.db_name == db.name
+    assert db.name.startswith('test_database')
+    assert repr(db) == '<DefaultDatabase {}>'.format(db.name)
 
-    # Test get database properties
+
+def test_database_misc_methods(db, bad_db):
+    # Test get properties
     properties = db.properties()
     assert 'id' in properties
     assert 'path' in properties
     assert properties['name'] == db.name
     assert properties['system'] is False
 
-    # Test get database properties with bad credentials
-    with pytest.raises(DatabasePropertiesError):
+    # Test get properties with bad database
+    with assert_raises(DatabasePropertiesError) as err:
         bad_db.properties()
+    assert err.value.error_code == 1228
 
     # Test get server version
     assert isinstance(db.version(), string_types)
 
-    # Test get server version with bad credentials
-    with pytest.raises(ServerVersionError):
+    # Test get server version with bad database
+    with assert_raises(ServerVersionError) as err:
         bad_db.version()
+    assert err.value.error_code == 1228
 
     # Test get server details
     details = db.details()
     assert 'architecture' in details
     assert 'server-version' in details
 
-    # Test get server details with bad credentials
-    with pytest.raises(ServerDetailsError):
+    # Test get server details with bad database
+    with assert_raises(ServerDetailsError) as err:
         bad_db.details()
+    assert err.value.error_code == 1228
 
     # Test get server target version
     version = db.target_version()
     assert isinstance(version, string_types)
 
-    # Test get server target version with bad credentials
-    with pytest.raises(ServerTargetVersionError):
+    # Test get server target version with bad database
+    with assert_raises(ServerTargetVersionError):
         bad_db.target_version()
 
     # Test get server statistics
@@ -85,9 +85,10 @@ def test_database_properties(db, bad_db, username):
     assert 'figures' in description
     assert 'groups' in description
 
-    # Test get server statistics with bad credentials
-    with pytest.raises(ServerStatisticsError):
+    # Test get server statistics with bad database
+    with assert_raises(ServerStatisticsError) as err:
         bad_db.statistics()
+    assert err.value.error_code == 1228
 
     # Test get server role
     assert db.role() in {
@@ -98,16 +99,18 @@ def test_database_properties(db, bad_db, username):
         'UNDEFINED'
     }
 
-    # Test get server role with bad credentials
-    with pytest.raises(ServerRoleError):
+    # Test get server role with bad database
+    with assert_raises(ServerRoleError) as err:
         bad_db.role()
+    assert err.value.error_code == 1228
 
     # Test get server time
     assert isinstance(db.time(), datetime)
 
-    # Test get server time with bad credentials
-    with pytest.raises(ServerTimeError):
+    # Test get server time with bad database
+    with assert_raises(ServerTimeError) as err:
         bad_db.time()
+    assert err.value.error_code == 1228
 
     # Test echo (get last request)
     last_request = db.echo()
@@ -116,9 +119,10 @@ def test_database_properties(db, bad_db, username):
     assert 'requestType' in last_request
     assert 'rawRequestBody' in last_request
 
-    # Test echo with bad credentials
-    with pytest.raises(ServerEchoError):
+    # Test echo with bad database
+    with assert_raises(ServerEchoError) as err:
         bad_db.echo()
+    assert err.value.error_code == 1228
 
     # Test read_log with default arguments
     log = db.read_log(upto='fatal')
@@ -141,23 +145,26 @@ def test_database_properties(db, bad_db, username):
     assert 'text' in log
     assert 'total_amount' in log
 
-    # Test read_log with bad credentials
-    with pytest.raises(ServerReadLogError):
+    # Test read_log with bad database
+    with assert_raises(ServerReadLogError) as err:
         bad_db.read_log()
+    assert err.value.error_code == 1228
 
     # Test reload routing
     assert isinstance(db.reload_routing(), bool)
 
-    # Test reload routing with bad credentials
-    with pytest.raises(ServerReloadRoutingError):
+    # Test reload routing with bad database
+    with assert_raises(ServerReloadRoutingError) as err:
         bad_db.reload_routing()
+    assert err.value.error_code == 1228
 
     # Test get log levels
     assert isinstance(db.log_levels(), dict)
 
-    # Test get log levels with bad credentials
-    with pytest.raises(ServerLogLevelError):
+    # Test get log levels with bad database
+    with assert_raises(ServerLogLevelError) as err:
         bad_db.log_levels()
+    assert err.value.error_code == 1228
 
     # Test set log levels
     new_levels = {
@@ -166,129 +173,70 @@ def test_database_properties(db, bad_db, username):
         'threads': 'WARNING'
     }
     result = db.set_log_levels(**new_levels)
-
     for key, value in new_levels.items():
         assert result[key] == value
-
     for key, value in db.log_levels().items():
         assert result[key] == value
 
-    # Test set log levels with bad credentials
-    with pytest.raises(ServerLogLevelSetError):
+    # Test set log levels with bad database
+    with assert_raises(ServerLogLevelSetError):
         bad_db.set_log_levels(**new_levels)
 
     # Test get server endpoints
-    with pytest.raises(ServerEndpointsError) as err:
+    with assert_raises(ServerEndpointsError) as err:
         db.endpoints()
-    assert err.value.http_code == 403
+    assert err.value.error_code in [11]
 
-    # Test get server endpoints with bad credentials
-    with pytest.raises(ServerEndpointsError):
+    # Test get server endpoints with bad database
+    with assert_raises(ServerEndpointsError) as err:
         bad_db.endpoints()
+    assert err.value.error_code == 1228
+
+    # Test get storage engine
+    engine = db.engine()
+    assert engine['name'] in ['mmfiles', 'rocksdb']
+    assert 'supports' in engine
+
+    # Test get storage engine with bad database
+    with assert_raises(ServerEngineError) as err:
+        bad_db.engine()
+    assert err.value.error_code == 1228
 
 
 def test_database_management(db, sys_db, bad_db):
     # Test list databases
-    result = db.databases()
+    result = sys_db.databases()
     assert '_system' in result
 
-    # Test list databases with bad credentials
-    with pytest.raises(DatabaseListError):
+    # Test list databases with bad database
+    with assert_raises(DatabaseListError):
         bad_db.databases()
 
     # Test create database
-    db_name = generate_database_name()
+    db_name = generate_db_name()
     assert sys_db.create_database(db_name) is True
     assert db_name in sys_db.databases()
 
     # Test create duplicate database
-    with pytest.raises(DatabaseCreateError) as err:
+    with assert_raises(DatabaseCreateError) as err:
         sys_db.create_database(db_name)
-    assert 'duplicate' in str(err.value)
+    assert err.value.error_code == 1207
 
     # Test create database without permissions
-    with pytest.raises(DatabaseCreateError) as err:
+    with assert_raises(DatabaseCreateError) as err:
         db.create_database(db_name)
-    assert err.value.http_code == 403
+    assert err.value.error_code == 1230
 
-    # Test delete database with bad credentials
-    with pytest.raises(DatabaseDeleteError) as err:
+    # Test delete database without permissions
+    with assert_raises(DatabaseDeleteError) as err:
         db.delete_database(db_name)
-    assert err.value.http_code == 403
+    assert err.value.error_code == 1230
 
     # Test delete database
     assert sys_db.delete_database(db_name) is True
     assert db_name not in sys_db.databases()
 
     # Test delete missing database
-    with pytest.raises(DatabaseDeleteError) as err:
+    with assert_raises(DatabaseDeleteError) as err:
         sys_db.delete_database(db_name)
-    assert err.value.http_code == 404
-    assert sys_db.delete_database(db_name, ignore_missing=True) is False
-
-
-def test_collection_management(db, bad_db):
-    # Test create collection
-    col_name = generate_collection_name()
-    col = db.create_collection(
-        name=col_name,
-        sync=True,
-        compact=False,
-        journal_size=7774208,
-        system=False,
-        volatile=False,
-        key_generator='autoincrement',
-        user_keys=False,
-        key_increment=9,
-        key_offset=100,
-        edge=True,
-        shard_count=2,
-        shard_fields=['test_attr'],
-        index_bucket_count=10,
-        replication_factor=1
-    )
-    properties = col.properties()
-    assert 'id' in properties
-    assert properties['name'] == col_name
-    assert properties['sync'] is True
-    assert properties['system'] is False
-    assert properties['edge'] is True
-    assert properties['key_generator'] == 'autoincrement'
-    assert properties['user_keys'] is False
-    assert properties['key_increment'] == 9
-    assert properties['key_offset'] == 100
-
-    # Test create duplicate collection
-    with pytest.raises(CollectionCreateError) as err:
-        db.create_collection(col_name)
-    assert 'duplicate' in str(err.value)
-
-    # Test list collections
-    assert all(
-        entry['name'].startswith('test_collection')
-        or entry['name'].startswith('_')
-        for entry in db.collections()
-    )
-
-    # Test list collections with bad credentials
-    with pytest.raises(CollectionListError):
-        bad_db.collections()
-
-    # Test get collection object
-    test_col = db.collection(col.name)
-    assert isinstance(test_col, Collection)
-    assert test_col.name == col.name
-
-    test_col = db[col.name]
-    assert isinstance(test_col, Collection)
-    assert test_col.name == col.name
-
-    # Test delete collection
-    assert db.delete_collection(col_name) is True
-    assert col_name not in extract('name', db.collections())
-
-    # Test drop missing collection
-    with pytest.raises(CollectionDeleteError) as err:
-        db.delete_collection(col_name)
-    assert err.value.http_code == 404
-    assert db.delete_collection(col_name, ignore_missing=True) is False
+    assert err.value.error_code == 1228

@@ -1,5 +1,7 @@
 from __future__ import absolute_import, unicode_literals
 
+__all__ = ['Request']
+
 import json
 
 from six import moves, string_types
@@ -9,9 +11,9 @@ class Request(object):
     """Abstraction of an API request.
 
     :param method: HTTP method in lowercase (e.g. "post").
-    :type method: str or unicode
+    :type method: str | unicode
     :param endpoint: API URL endpoint.
-    :type endpoint: str or unicode
+    :type endpoint: str | unicode
     :param headers: Request headers.
     :type headers: dict
     :param params: URL parameters.
@@ -19,11 +21,11 @@ class Request(object):
     :param data: Request payload.
     :type data: object
     :param command: Transaction command.
-    :type command: str or unicode
+    :type command: str | unicode
     :param read: Collection read during a transaction.
-    :type read: str or unicode
+    :type read: str | unicode
     :param write: Collection written to during a transaction.
-    :type write: str or unicode
+    :type write: str | unicode
     """
 
     __slots__ = (
@@ -34,8 +36,7 @@ class Request(object):
         'data',
         'command',
         'read',
-        'write',
-        'graph'
+        'write'
     )
 
     def __init__(self,
@@ -50,9 +51,12 @@ class Request(object):
         self.method = method
         self.endpoint = endpoint
         self.headers = headers or {}
-        #self._params = params
 
-        # Covert booleans in URL params to integers
+        # Insert default headers
+        self.headers['content-type'] = 'application/json'
+        self.headers['charset'] = 'utf-8'
+
+        # Sanitize URL params
         if params is not None:
             for key, val in params.items():
                 if isinstance(val, bool):
@@ -67,6 +71,7 @@ class Request(object):
         else:
             self.data = json.dumps(data)
 
+        # Transaction metadata
         self.command = command
         self.read = read
         self.write = write

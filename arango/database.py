@@ -1,12 +1,25 @@
 from __future__ import absolute_import, unicode_literals
 
+from arango.utils import split_id
+
+__all__ = [
+    'DefaultDatabase',
+    'AsyncDatabase',
+    'BatchDatabase',
+    'TransactionDatabase'
+]
+
 from datetime import datetime
 
 from arango.api import APIWrapper
 from arango.aql import AQL
-from arango.async import AsyncExecutor
-from arango.batch import Batch
-from arango.collection import Collection
+from arango.executor import (
+    DefaultExecutor,
+    AsyncExecutor,
+    BatchExecutor,
+    TransactionExecutor,
+)
+from arango.collection import DefaultCollection
 from arango.exceptions import (
     AsyncJobClearError,
     AsyncJobListError,
@@ -20,11 +33,12 @@ from arango.exceptions import (
     GraphListError,
     GraphCreateError,
     GraphDeleteError,
-    PregelJobCreateError,
-    PregelJobDeleteError,
-    PregelJobGetError,
+    PermissionGetError,
+    PermissionClearError,
+    PermissionUpdateError,
     ServerConnectionError,
     ServerEndpointsError,
+    ServerEngineError,
     ServerDetailsError,
     ServerEchoError,
     ServerLogLevelError,
@@ -43,69 +57,75 @@ from arango.exceptions import (
     TaskGetError,
     TaskListError,
     TransactionExecuteError,
-    PermissionGetError,
     UserCreateError,
     UserDeleteError,
     UserGetError,
-    PermissionUpdateError,
     UserListError,
-    PermissionDeleteError,
     UserReplaceError,
     UserUpdateError,
-    ServerEngineError)
+    DocumentParseError
+)
 from arango.foxx import Foxx
 from arango.graph import Graph
+from arango.pregel import Pregel
 from arango.request import Request
-from arango.transaction import Transaction
-from arango.utils import is_dict
 from arango.wal import WAL
 
 
 class Database(APIWrapper):
-    """ArangoDB database.
+    """ArangoDB database base class.
 
     :param connection: HTTP connection.
     :type connection: arango.connection.Connection
     :param executor: API executor.
-    :type executor: arango.api.APIExecutor
+    :type executor: arango.executor.DefaultExecutor
     """
 
     def __init__(self, connection, executor):
         super(Database, self).__init__(connection, executor)
-        self._aql = AQL(connection, executor)
-        self._wal = WAL(connection, executor)
-        self._foxx = Foxx(connection, executor)
-
-    def __repr__(self):
-        return '<Database {}>'.format(self.name)
 
     def __getitem__(self, name):
         """Return the collection wrapper.
 
         :param name: Collection name.
-        :type name: str or unicode
+        :type name: str | unicode
         :return: Collection wrapper.
-        :rtype: arango.collection.Collection
+        :rtype: arango.collection.DefaultCollection
         """
         return self.collection(name)
+
+    def _get_col_by_doc(self, document):
+        """Return the collection for the given document.
+
+        :param document: Document ID or body with "_id" field.
+        :type document: str | unicode | dict
+        :return: Collection wrapper.
+        :rtype: arango.collection.DefaultCollection
+        :raise arango.exceptions.DocumentParseError: On malformed document.
+        """
+        return self.collection(split_id(document)[0])
+
+    def _get_col_by_docs(self, documents):
+        """Return the collection for the given document.
+
+        :param documents: List of document IDs or bodies with "_id" fields.
+        :rtype: [str | unicode | dict]
+        :return: Collection wrapper.
+        :rtype: arango.collection.DefaultCollection
+        :raise arango.exceptions.DocumentParseError: On malformed document.
+        """
+        if len(documents) == 0:
+            raise DocumentParseError('got empty list of documents')
+        return self._get_col_by_doc(documents[0])
 
     @property
     def name(self):
         """Return the database name.
 
         :return: Database name.
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
-        return self._conn.database
-
-    @property
-    def username(self):
-        """Return the username used for authentication.
-
-        :return: Username used for authentication.
-        :rtype: str or unicode
-        """
-        return self._conn.username
+        return self.db_name
 
     @property
     def aql(self):
@@ -116,7 +136,7 @@ class Database(APIWrapper):
         :return: AQL wrapper.
         :rtype: arango.aql.AQL
         """
-        return self._aql
+        return AQL(self._conn, self._executor)
 
     @property
     def wal(self):
@@ -127,7 +147,7 @@ class Database(APIWrapper):
         :return: WAL wrapper.
         :rtype: arango.wal.WAL
         """
-        return self._wal
+        return WAL(self._conn, self._executor)
 
     @property
     def foxx(self):
@@ -136,17 +156,27 @@ class Database(APIWrapper):
         See :class:`arango.foxx.Foxx` for more information.
 
         :return: Foxx wrapper.
-        :rtype:`arango.foxx.Foxx
+        :rtype: arango.foxx.Foxx
         """
-        return self._foxx
+        return Foxx(self._conn, self._executor)
+
+    @property
+    def pregel(self):
+        """Return the Pregel wrapper.
+
+        See :class:`arango.pregel.Pregel` for more information.
+
+        :return: Pregel wrapper.
+        :rtype: arango.pregel.Pregel
+        """
+        return Pregel(self._conn, self._executor)
 
     def properties(self):
         """Return the database properties.
 
         :return: Database properties.
         :rtype: dict
-        :raise arango.exceptions.DatabasePropertiesError: If retrieval
-            fails.
+        :raise arango.exceptions.DatabasePropertiesError: If retrieval fails.
         """
         request = Request(
             method='get',
@@ -162,58 +192,6 @@ class Database(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    def begin_async(self, return_result=True):
-        """Begin async API execution.
-
-        :param return_result: If set to True, results of API calls are stored
-            server-side and instances of :class:`arango.async.AsyncJob` are
-            returned to the user for progress tracking and result retrieval.
-            If set to False, no results are stored server-side and no jobs are
-            returned to the user.
-        :type return_result: bool
-        :return: New database wrapper. API calls made using this database are
-            queued up server-side and executed asynchronously.
-        :rtype: arango.database.Database
-        """
-        return Database(self._conn, AsyncExecutor(return_result))
-
-    def begin_batch(self, return_result=True):
-        """Begin batch API execution.
-
-        :param return_result: If set to True, results of API calls are stored
-            client-side and instances of :class:`arango.batch.BatchJob` are
-            returned to the user for progress tracking and result retrieval.
-            The job instances are populated with results on commit. If set to
-            False, results are ignored and no jobs are returned to the user.
-            This saves memory when results are not required.
-        :type return_result: bool
-        :return: New database wrapper. API calls made using this database are
-            queued up client-side and executed in one go in when committed.
-        :rtype: arango.database.Database
-        """
-        return Batch(self._conn, return_result)
-
-    def begin_transaction(self, timeout=None, sync=None, return_result=True):
-        """Begin transaction.
-
-        :param timeout: Timeout on collection locks.
-        :type timeout: int
-        :param sync: Block until the operation is synchronized to disk.
-        :type sync: bool
-        :param return_result: If set to True, API calls are queued client-side
-            and :class:`arango.transaction.TransactionJob` instances are
-            returned to user. Job instances are populated with the results on
-            commit. If set to False, requests are queued and executed, but
-            results are not saved and job objects are not returned to the user.
-        :type return_result: bool
-        """
-        return Transaction(
-            connection=self._conn,
-            timeout=timeout,
-            sync=sync,
-            return_result=return_result
-        )
-
     def execute_transaction(self,
                             command,
                             params=None,
@@ -223,19 +201,19 @@ class Database(APIWrapper):
                             timeout=None,
                             max_size=None,
                             allow_implicit=None,
-                            autocommit_ops=None,
-                            autocommit_size=None):
+                            intermediate_commit_count=None,
+                            intermediate_commit_size=None):
         """Execute a raw Javascript code in a transaction.
 
         :param command: Javascript code to execute.
-        :type command: str or unicode
+        :type command: str | unicode
         :param read: Names of collections read during transaction.
             If **allow_implicit** is set to True, any undeclared collections
             are loaded lazily.
-        :type read: [str or unicode]
+        :type read: [str | unicode]
         :param write: Names of collections where data is written
             during transaction. Transaction fails on undeclared collections.
-        :type write: [str or unicode]
+        :type write: [str | unicode]
         :param params: Optional arguments passed to **action**.
         :type params: dict
         :param sync: Block until the operation is synchronized to disk.
@@ -244,23 +222,23 @@ class Database(APIWrapper):
             to 0, the ArangoDB server waits indefinitely. If not set, system
             default value is used.
         :type timeout: int
-        :param max_size: Maximum transaction size limit in bytes. Applies only
+        :param max_size: Max transaction size limit in bytes. Applies only
             to RocksDB storage engine.
         :type max_size: int
         :param allow_implicit: If set to True, undeclared read collections are
             loaded lazily. If set to False, transaction fails on undeclared
             collections.
         :type allow_implicit: bool
-        :param autocommit_ops: Maximum number of operations after which an
-            intermediate commit is performed automatically. Applies only to
-            RocksDB storage engine.
-        :type autocommit_ops: int
-        :param autocommit_size: Maximum total size of operations after which an
-            intermediate commit is performed automatically. Applies only to
-            RocksDB storage engine.
-        :type autocommit_size: int
+        :param intermediate_commit_count: Max number of operations after
+            which an intermediate commit is performed automatically. Applies
+            only to RocksDB storage engine.
+        :type intermediate_commit_count: int
+        :param intermediate_commit_size: Max size of operations in bytes
+            after which an intermediate commit is performed automatically.
+            Applies only to RocksDB storage engine.
+        :type intermediate_commit_size: int
         :return: Return value of the code defined in **action**.
-        :rtype: str or unicode
+        :rtype: str | unicode
         :raise arango.exceptions.TransactionExecuteError: If execution fails.
         """
         collections = {'allowImplicit': allow_implicit}
@@ -280,10 +258,10 @@ class Database(APIWrapper):
             data['waitForSync'] = sync
         if max_size is not None:
             data['maxTransactionSize'] = max_size
-        if autocommit_ops is not None:
-            data['intermediateCommitCount'] = autocommit_ops
-        if autocommit_size is not None:
-            data['intermediateCommitSize'] = autocommit_size
+        if intermediate_commit_count is not None:
+            data['intermediateCommitCount'] = intermediate_commit_count
+        if intermediate_commit_size is not None:
+            data['intermediateCommitSize'] = intermediate_commit_size
 
         request = Request(
             method='post',
@@ -302,22 +280,19 @@ class Database(APIWrapper):
         """Return ArangoDB server version.
 
         :return: Server version.
-        :rtype: str or unicode
+        :rtype: str | unicode
         :raise arango.exceptions.ServerVersionError: If retrieval fails.
         """
         request = Request(
             method='get',
             endpoint='/_api/version',
-            params={'details': False},
-            command='db._version(false)'
+            params={'details': False}
         )
 
         def response_handler(resp):
             if not resp.is_success:
                 raise ServerVersionError(resp)
-            if is_dict(resp.body):
-                return resp.body['version']
-            return resp.body
+            return resp.body['version']
 
         return self._execute(request, response_handler)
 
@@ -331,14 +306,13 @@ class Database(APIWrapper):
         request = Request(
             method='get',
             endpoint='/_api/version',
-            params={'details': True},
-            command='db._version(true)'
+            params={'details': True}
         )
 
         def response_handler(resp):
             if not resp.is_success:
                 raise ServerDetailsError(resp)
-            return resp.body.get('details', resp.body)
+            return resp.body['details']
 
         return self._execute(request, response_handler)
 
@@ -346,7 +320,7 @@ class Database(APIWrapper):
         """Return required version of target database.
 
         :return: Required version of target database.
-        :rtype: str or unicode
+        :rtype: str | unicode
         :raise arango.exceptions.ServerTargetVersionError: If retrieval fails.
         """
         request = Request(
@@ -361,11 +335,11 @@ class Database(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    def endpoints(self):
+    def endpoints(self):  # pragma: no cover
         """Return the information about all coordinate endpoints.
 
         :return: List of endpoints.
-        :rtype: [str or unicode]
+        :rtype: [str | unicode]
         :raise arango.exceptions.ServerEndpointsError: If retrieval fails.
 
         .. note::
@@ -387,7 +361,7 @@ class Database(APIWrapper):
         """Return the database engine information.
 
         :return: Database engine information.
-        :rtype: str or unicode
+        :rtype: str | unicode
         :raise arango.exceptions.ServerEngineError: If retrieval fails.
         """
         request = Request(
@@ -418,11 +392,10 @@ class Database(APIWrapper):
         def response_handler(resp):
             code = resp.status_code
             if code in {401, 403}:
-                raise ServerConnectionError(
-                    message='bad username and/or password')
+                raise ServerConnectionError('bad username and/or password')
             if not resp.is_success:
-                message = resp.error_message or 'bad server response'
-                raise ServerConnectionError(message=message)
+                raise ServerConnectionError(
+                    resp.error_message or 'bad server response')
             return code
 
         return self._execute(request, response_handler)
@@ -459,7 +432,7 @@ class Database(APIWrapper):
         :return: Server role which can be "SINGLE" (server not in a cluster),
             "COORDINATOR" (cluster coordinator), "PRIMARY", "SECONDARY" or
             "UNDEFINED".
-        :rtype: str or unicode
+        :rtype: str | unicode
         :raise arango.exceptions.ServerRoleError: If retrieval fails.
         """
         request = Request(
@@ -498,8 +471,7 @@ class Database(APIWrapper):
 
         :return: Details of the last request
         :rtype: dict
-        :raise arango.exceptions.ServerEchoError: If last request cannot
-            be retrieved from the server
+        :raise arango.exceptions.ServerEchoError: If retrieval fails.
         """
         request = Request(
             method='get',
@@ -536,7 +508,7 @@ class Database(APIWrapper):
         """Run the available unittests on the server.
 
         :param tests: List of files containing the test suites.
-        :type tests: [str or unicode]
+        :type tests: [str | unicode]
         :return: Test results.
         :rtype: dict
         :raise arango.exceptions.ServerRunTestsError: If execution fails.
@@ -567,29 +539,27 @@ class Database(APIWrapper):
         :param upto: return the log entries up to the given level (mutually
             exclusive with argument **level**), which must be "fatal",
             "error", "warning", "info" (default) or "debug"
-        :type upto: str or unicode or int
+        :type upto: str | unicode | int
         :param level: return the log entries of only the given level (mutually
             exclusive with **upto**), which must be "fatal", "error",
             "warning", "info" (default) or "debug"
-        :type level: str or unicode or int
+        :type level: str | unicode | int
         :param start: return the log entries whose ID is greater or equal to
             the given value
         :type start: int
         :param size: restrict the size of the result to the given value (this
             setting can be used for pagination)
         :type size: int
-        :param offset: Number of entries to skip initially (this setting
-            can be setting can be used for pagination)
+        :param offset: Number of entries to skip (e.g. for pagination).
         :type offset: int
         :param search: return only the log entries containing the given text
-        :type search: str or unicode
+        :type search: str | unicode
         :param sort: sort the log entries according to the given fashion, which
             can be "sort" or "desc"
-        :type sort: str or unicode
+        :type sort: str | unicode
         :return: Server log entries
         :rtype: dict
-        :raise arango.exceptions.ServerReadLogError: If server log entries
-            cannot be read
+        :raise arango.exceptions.ServerReadLogError: If read fails.
         """
         params = dict()
         if upto is not None:
@@ -678,10 +648,8 @@ class Database(APIWrapper):
 
         :return: whether the routing was reloaded successfully
         :rtype: bool
-        :raise arango.exceptions.ServerReloadRoutingError: If routing
-            cannot be reloaded
+        :raise arango.exceptions.ServerReloadRoutingError: If reload fails.
         """
-
         request = Request(
             method='post',
             endpoint='/_admin/routing/reload'
@@ -707,16 +675,13 @@ class Database(APIWrapper):
         """
         request = Request(
             method='get',
-            endpoint='/_api/database',
-            command='db._databases()'
+            endpoint='/_api/database'
         )
 
         def response_handler(resp):
             if not resp.is_success:
                 raise DatabaseListError(resp)
-            if is_dict(resp.body):
-                return resp.body['result']
-            return resp.body
+            return resp.body['result']
 
         return self._execute(request, response_handler)
 
@@ -724,7 +689,7 @@ class Database(APIWrapper):
         """Create a new database.
 
         :param name: Database name.
-        :type name: str or unicode
+        :type name: str | unicode
         :param users: List of users with access to the new database, where
             each user is represented by a dictionary with fields "username",
             "password", "active" and "extra". If not set, only the admin and
@@ -742,7 +707,7 @@ class Database(APIWrapper):
 
         :type users: [dict]
         :return: Database wrapper.
-        :rtype: arango.database.Database
+        :rtype: arango.database.DefaultDatabase
         :raise arango.exceptions.DatabaseCreateError: If create fails.
         """
         data = {'name': name}
@@ -767,13 +732,11 @@ class Database(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    def delete_database(self, name, ignore_missing=False):
+    def delete_database(self, name):
         """Delete the database of the specified name.
 
         :param name: Database name.
-        :type name: str or unicode
-        :param ignore_missing: Do not raise exception on missing database.
-        :type ignore_missing: bool
+        :type name: str | unicode
         :return: True if the database was deleted successfully.
         :rtype: bool
         :raise arango.exceptions.DatabaseDeleteError: If delete fails.
@@ -785,8 +748,6 @@ class Database(APIWrapper):
 
         def response_handler(resp):
             if not resp.is_success:
-                if resp.status_code == 404 and ignore_missing:
-                    return False
                 raise DatabaseDeleteError(resp)
             return resp.body['result']
 
@@ -800,17 +761,17 @@ class Database(APIWrapper):
         """Return the collection wrapper.
 
         :param name: Collection name.
-        :type name: str or unicode
+        :type name: str | unicode
         :return: Collection wrapper.
-        :rtype: arango.collection.Collection
+        :rtype: arango.collection.DefaultCollection
         """
-        return Collection(self._conn, self._executor, name)
+        return DefaultCollection(self._conn, self._executor, name)
 
     def collections(self):
         """Return the collections in the database.
 
         :return: Details of the collections in the database.
-        :rtype: [dict] or [str or unicode]
+        :rtype: [dict] | [str | unicode]
         :raise arango.exceptions.CollectionListError: If retrieval fails.
         """
         request = Request(
@@ -825,8 +786,8 @@ class Database(APIWrapper):
                 'id': col['id'],
                 'name': col['name'],
                 'system': col['isSystem'],
-                'type': Collection.types[col['type']],
-                'status': Collection.statuses[col['status']],
+                'type': DefaultCollection.types[col['type']],
+                'status': DefaultCollection.statuses[col['status']],
             } for col in map(dict, resp.body['result'])]
 
         return self._execute(request, response_handler)
@@ -850,7 +811,7 @@ class Database(APIWrapper):
         """Create a new collection.
 
         :param name: Collection name.
-        :type name: str or unicode
+        :type name: str | unicode
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
         :param compact: Whether the collection is compacted.
@@ -859,7 +820,7 @@ class Database(APIWrapper):
             from ArangoDB version 3.1+, system collections must have a name
             with a leading underscore "_" character.
         :type system: bool
-        :param journal_size: Maximum size of the journal in bytes.
+        :param journal_size: Max size of the journal in bytes.
         :type journal_size: int
         :param edge: Whether the collection is an edge collection.
         :type edge: bool
@@ -867,7 +828,7 @@ class Database(APIWrapper):
         :type volatile: bool
         :param key_generator: Used for generating document keys. Allowed values
             are "traditional" or "autoincrement".
-        :type key_generator: str or unicode
+        :type key_generator: str | unicode
         :param user_keys: Whether to allow users to supply the document keys.
         :type user_keys: bool
         :param key_increment: Key increment value. Applies only when the value
@@ -877,7 +838,7 @@ class Database(APIWrapper):
             **key_generator** is set to "autoincrement".
         :type key_offset: int
         :param shard_fields: Field(s) used to determine the target shard.
-        :type shard_fields: [str or unicode]
+        :type shard_fields: [str | unicode]
         :param shard_count: Number of shards to create.
         :type shard_count: int
         :param index_bucket_count: Number of buckets into which indexes
@@ -904,7 +865,7 @@ class Database(APIWrapper):
 
         :type replication_factor: int
         :return: Collection wrapper.
-        :rtype: arango.collection.Collection
+        :rtype: arango.collection.DefaultCollection
         :raise arango.exceptions.CollectionCreateError: If create fails.
         """
         key_options = {'type': key_generator, 'allowUserKeys': user_keys}
@@ -955,11 +916,10 @@ class Database(APIWrapper):
         """Delete a collection.
 
         :param name: Collection name.
-        :type name: str or unicode
+        :type name: str | unicode
         :param ignore_missing: Do not raise an exception on missing collection.
         :type ignore_missing: bool
-        :param system: Whether the collection is a system collection. Only
-            only available with ArangoDB 3.1+.
+        :param system: Whether the collection is a system collection.
         :type system: bool
         :return: True if the deletion was successful.
         :rtype: bool
@@ -976,10 +936,11 @@ class Database(APIWrapper):
         )
 
         def response_handler(resp):
+            if resp.error_code == 1203 and ignore_missing:
+                return False
             if not resp.is_success:
-                if not (resp.status_code == 404 and ignore_missing):
-                    raise CollectionDeleteError(resp)
-            return not resp.body['error']
+                raise CollectionDeleteError(resp)
+            return True
 
         return self._execute(request, response_handler)
 
@@ -991,7 +952,7 @@ class Database(APIWrapper):
         """Return the graph wrapper.
 
         :param name: Graph name.
-        :type name: str or unicode
+        :type name: str | unicode
         :return: Graph wrapper.
         :rtype: arango.graph.Graph
         """
@@ -1001,7 +962,7 @@ class Database(APIWrapper):
         """List all graphs in the database.
 
         :return: Graphs in the database.
-        :rtype: dict or [str or unicode]
+        :rtype: dict | [str | unicode]
         :raise arango.exceptions.GraphListError: If retrieval fails.
         """
         request = Request(
@@ -1036,7 +997,7 @@ class Database(APIWrapper):
         """Create a new graph in the database.
 
         :param name: Graph name.
-        :type name: str or unicode
+        :type name: str | unicode
         :param edge_definitions: List of edge definitions. An edge definition
             should look like this:
 
@@ -1050,7 +1011,7 @@ class Database(APIWrapper):
 
         :type edge_definitions: [dict]
         :param orphan_collections: Names of additional vertex collections.
-        :type orphan_collections: [str or unicode]
+        :type orphan_collections: [str | unicode]
         :param smart: If set to True, sharding is enabled (see parameter
             **smart_field** below). This is only for the enterprise version of
             ArangoDB.
@@ -1059,7 +1020,7 @@ class Database(APIWrapper):
             the graph. To use this, parameter **smart** must be set to True and
             every vertex in the graph must have the smart field. This is only
             for the enterprise version of ArangoDB.
-        :type smart_field: str or unicode
+        :type smart_field: str | unicode
         :param shard_count: Number of shards used for every collection in
             the graph. To use this, parameter **smart** must be set to True and
             every vertex in the graph must have the smart field. The number
@@ -1103,18 +1064,16 @@ class Database(APIWrapper):
         """Drop the graph of the given name from the database.
 
         :param name: Name of the graph to delete/drop.
-        :type name: str or unicode
-        :param ignore_missing: Ignore HTTP 404 (graph not found) from the
-            server. If this is set to True an exception is not raised.
+        :type name: str | unicode
+        :param ignore_missing: Do not raise an exception on missing graph.
         :type ignore_missing: bool
-        :param drop_collections: Whether to drop the collections of the graph
-            as well. The collections can only be dropped if they are not in use
-            by other graphs.
+        :param drop_collections: Drop the collections of the graph as well
+            (only if they are not in use by other graphs).
         :type drop_collections: bool
-        :return: Whether the deletion was successful.
+        :return: True if deletion was successful. False if graph was missing
+            and **ignore_missing** was set to True.
         :rtype: bool
-        :raise arango.exceptions.GraphDeleteError: If graph cannot be
-            deleted from the database
+        :raise arango.exceptions.GraphDeleteError: If delete fails.
         """
         params = {}
         if drop_collections is not None:
@@ -1127,12 +1086,427 @@ class Database(APIWrapper):
         )
 
         def response_handler(resp):
+            if resp.error_code == 1924 and ignore_missing:
+                return False
             if not resp.is_success:
-                if not (resp.status_code == 404 and ignore_missing):
-                    raise GraphDeleteError(resp)
-            return not resp.body['error']
+                raise GraphDeleteError(resp)
+            return True
 
         return self._execute(request, response_handler)
+
+    #######################
+    # Document Management #
+    #######################
+
+    def document(self, document, rev=None, check_rev=True):
+        """Return a document.
+
+        :param document: Document ID or body with "_id" field.
+        :type document: str | unicode | dict
+        :param rev: Expected document revision. Overrides the value of "_rev"
+            field in **document** if any.
+        :type rev: str | unicode
+        :param check_rev: If set to True, the revision of **document** (if any)
+            is compared against the revision of the target document.
+        :type check_rev: bool
+        :return: Document or None if not found.
+        :rtype: dict | None
+        :raise arango.exceptions.DocumentGetError: If retrieval fails.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
+        """
+        return self._get_col_by_doc(document).get(
+            document=document,
+            rev=rev,
+            check_rev=check_rev
+        )
+
+    def documents(self, documents):
+        """Return multiple documents ignoring any missing ones.
+
+        :param documents: List of document IDs or bodies with "_id" fields.
+        :type documents: [str | unicode | dict]
+        :return: Documents. Missing ones are not included.
+        :rtype: [dict]
+        :raise arango.exceptions.DocumentGetError: If retrieval fails.
+
+        .. note::
+            The ID of the first document in **documents** is used to determine
+            the target collection name.
+        """
+        return self._get_col_by_docs(documents).get_many(documents)
+
+    def insert_document(self,
+                        collection,
+                        document,
+                        return_new=False,
+                        sync=None,
+                        silent=False):
+        """Insert a new document.
+
+        :param collection: Collection name.
+        :type collection: str | unicode
+        :param document: Document to insert. If it contains the "_key" field,
+            the value is used as the key of the new document (auto-generated
+            otherwise). Any "_id" or "_rev" field is ignored.
+        :type document: dict
+        :param return_new: Include body of the new document in the returned
+            metadata. Ignored if parameter **silent** is set to True.
+        :type return_new: bool
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
+        :raise arango.exceptions.DocumentInsertError: If insert fails.
+        """
+        return self.collection(collection).insert(
+            document=document,
+            return_new=return_new,
+            sync=sync,
+            silent=silent
+        )
+
+    def insert_documents(self,
+                         collection,
+                         documents,
+                         return_new=False,
+                         sync=None,
+                         silent=False):
+        """Insert multiple documents into the collection.
+
+        :param collection: Target collection name.
+        :type collection: str | unicode
+        :param documents: List of new documents to insert. If they contain the
+            "_key" fields, the values are used as the keys of the new documents
+            (auto-generated otherwise). Any "_id" or "_rev" field is ignored.
+        :type documents: [dict]
+        :param return_new: Include bodies of the new documents in the returned
+            metadata. Ignored if parameter **silent** is set to True
+        :type return_new: bool
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: List of document metadata (e.g. document keys, revisions) and
+            any exceptions, or True if parameter **silent** was set to True.
+        :rtype: [dict | ArangoError] | bool
+        :raise arango.exceptions.DocumentInsertError: If insert fails.
+
+        .. note::
+            If inserting a document fails, the exception object is placed in
+            the result list instead of document metadata.
+
+        .. warning::
+            Parameters **return_new** should be used with caution, as the size
+            of returned result brought into client-side memory scales with the
+            number of documents inserted.
+        """
+        return self.collection(collection).insert_many(
+            documents=documents,
+            return_new=return_new,
+            sync=sync,
+            silent=silent
+        )
+
+    def update_document(self,
+                        document,
+                        check_rev=True,
+                        merge=True,
+                        keep_none=True,
+                        return_new=False,
+                        return_old=False,
+                        sync=None,
+                        silent=False):
+        """Update a document.
+
+        :param document: Partial or full document with the updated values. It
+            must contain the "_id" field.
+        :type document: dict
+        :param check_rev: If set to True, the "_rev" field in **document** (if
+            present) is compared against the revision of the target document.
+        :type check_rev: bool
+        :param merge: If set to True, sub-dictionaries are merged instead of
+            the new one overwriting the old one.
+        :type merge: bool
+        :param keep_none: If set to True, fields with value None are retained
+            in the document. Otherwise, they are removed completely.
+        :type keep_none: bool
+        :param return_new: Include body of the new document in the result.
+        :type return_new: bool
+        :param return_old: Include body of the old document in the result.
+        :type return_old: bool
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
+        :raise arango.exceptions.DocumentUpdateError: If update fails.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
+        """
+        return self._get_col_by_doc(document).update(
+            document=document,
+            check_rev=check_rev,
+            merge=merge,
+            keep_none=keep_none,
+            return_new=return_new,
+            return_old=return_old,
+            sync=sync,
+            silent=silent
+        )
+
+    def update_documents(self,
+                         documents,
+                         check_rev=True,
+                         merge=True,
+                         keep_none=True,
+                         return_new=False,
+                         return_old=False,
+                         sync=None,
+                         silent=False):
+        """Update multiple documents.
+
+        :param documents: Partial or full documents with the updated values.
+            They must contain the "_id" fields.
+        :type documents: [dict]
+        :param check_rev: If set to True, the "_rev" fields in **documents**
+            (if any) are compared against the revisions of target documents.
+        :type check_rev: bool
+        :param merge: If set to True, sub-dictionaries are merged instead of
+            the new ones overwriting the old ones.
+        :type merge: bool
+        :param keep_none: If set to True, fields with value None are retained
+            in the document. Otherwise, they are removed completely.
+        :type keep_none: bool
+        :param return_new: Include bodies of the new documents in the result.
+        :type return_new: bool
+        :param return_old: Include bodies of the old documents in the result.
+        :type return_old: bool
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: List of document metadata (e.g. document keys, revisions) and
+            any exceptions, or True if parameter **silent** was set to True.
+        :rtype: [dict | ArangoError] | bool
+        :raise arango.exceptions.DocumentUpdateError: If update fails.
+
+        .. note::
+            The ID of the first document in **documents** is used to determine
+            the target collection name.
+
+        .. note::
+            If updating a document fails, the exception object is placed in
+            the result list instead of document metadata.
+
+        .. warning::
+            Parameters **return_new** and **return_old** should be used with
+            caution, as the size of returned result brought into client-side
+            memory scales with the number of documents updated.
+        """
+        return self._get_col_by_docs(documents).update_many(
+            documents=documents,
+            check_rev=check_rev,
+            merge=merge,
+            keep_none=keep_none,
+            return_new=return_new,
+            return_old=return_old,
+            sync=sync,
+            silent=silent
+        )
+
+    def replace_document(self,
+                         document,
+                         check_rev=True,
+                         return_new=False,
+                         return_old=False,
+                         sync=None,
+                         silent=False):
+        """Replace a document.
+
+        :param document: New document to replace the old one with. It must
+            contain the "_id" field. Edge document must also have "_from"
+            and "_to" fields.
+        :type document: dict
+        :param check_rev: If set to True, the "_rev" field in **document**
+            is compared against the revision of the target document.
+        :type check_rev: bool
+        :param return_new: Include body of the new document in the result.
+        :type return_new: bool
+        :param return_old: Include body of the old document in the result.
+        :type return_old: bool
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
+        :raise arango.exceptions.DocumentReplaceError: If replace fails.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
+        """
+        return self._get_col_by_doc(document).replace(
+            document=document,
+            check_rev=check_rev,
+            return_new=return_new,
+            return_old=return_old,
+            sync=sync,
+            silent=silent
+        )
+
+    def replace_documents(self,
+                          documents,
+                          check_rev=True,
+                          return_new=False,
+                          return_old=False,
+                          sync=None,
+                          silent=False):
+        """Replace multiple documents.
+
+        :param documents: New documents to replace the old ones with. They must
+            contain the "_id" fields. Edge documents must also have "_from" and
+            "_to" fields.
+        :type documents: [dict]
+        :param check_rev: If set to True, the "_rev" fields in **documents**
+            (if any) are compared against the revisions of target documents.
+        :type check_rev: bool
+        :param return_new: Include bodies of the new documents in the result.
+        :type return_new: bool
+        :param return_old: Include bodies of the old documents in the result.
+        :type return_old: bool
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: List of document metadata (e.g. document keys, revisions) and
+            any exceptions, or True if parameter **silent** was set to True.
+        :rtype: [dict | ArangoError] | bool
+        :raise arango.exceptions.DocumentReplaceError: If replace fails.
+
+        .. note::
+            The ID of the first document in **documents** is used to determine
+            the target collection name.
+
+        .. note::
+            If replacing a document fails, the exception object is placed in
+            the result list instead of document metadata.
+
+        .. warning::
+            Parameters **return_new** and **return_old** should be used with
+            caution, as the size of returned result brought into client-side
+            memory scales with the number of documents replaced.
+        """
+        return self._get_col_by_docs(documents).replace_many(
+            documents=documents,
+            check_rev=check_rev,
+            return_new=return_new,
+            return_old=return_old,
+            sync=sync,
+            silent=silent
+        )
+
+    def delete_document(self,
+                        document,
+                        rev=None,
+                        check_rev=True,
+                        ignore_missing=False,
+                        return_old=False,
+                        sync=None,
+                        silent=False):
+        """Delete a document.
+
+        :param document: Document ID, key or body. Document body must contain
+            the "_id" field.
+        :type document: str | unicode | dict
+        :param rev: Expected document revision. Overrides the value of "_rev"
+            field in **document** if any.
+        :type rev: str | unicode
+        :param check_rev: If set to True, the revision of **document** (if any)
+            is compared against the revision of the target document.
+        :type check_rev: bool
+        :param ignore_missing: Do not raise an exception on missing document.
+            This parameter has no effect in transactions where an exception is
+            always raised.
+        :type ignore_missing: bool
+        :param return_old: Include body of the old document in the result.
+        :type return_old: bool
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision), or True if
+            parameter **silent** was set to True, or False if document is
+            missing and **ignore_missing** was set to True (does not apply
+            in transactions).
+        :rtype: bool | dict
+        :raise arango.exceptions.DocumentDeleteError: If delete fails.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
+        """
+        return self._get_col_by_doc(document).delete(
+            document=document,
+            rev=rev,
+            check_rev=check_rev,
+            ignore_missing=ignore_missing,
+            return_old=return_old,
+            sync=sync,
+            silent=silent
+        )
+
+    def delete_documents(self,
+                         documents,
+                         check_rev=True,
+                         return_old=False,
+                         sync=None,
+                         silent=False):
+        """Delete multiple documents.
+
+        :param documents: Document IDs or bodies with "_id" fields.
+        :type documents: [str | unicode | dict]
+        :param return_old: Include bodies of the old documents in the result.
+        :type return_old: bool
+        :param check_rev: If set to True, the "_rev" fields in **documents**
+            are compared against the revisions of the target documents.
+        :type check_rev: bool
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document keys, revisions) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
+        :raise arango.exceptions.DocumentDeleteError: If delete fails.
+
+        .. note::
+            The ID of the first document in **documents** is used to determine
+            the target collection name.
+
+        .. note::
+            The ID of the first document in **documents** is used to determine
+            the target collection name.
+
+        .. warning::
+            Parameters **return_old** should be used with caution, as the size
+            of returned metadata (brought into client-side memory) scales with
+            the number of documents deleted.
+        """
+        return self._get_col_by_docs(documents).delete_many(
+            documents=documents,
+            check_rev=check_rev,
+            return_old=return_old,
+            sync=sync,
+            silent=silent
+        )
 
     ###################
     # Task Management #
@@ -1161,7 +1535,7 @@ class Database(APIWrapper):
         """Return the active server task with the given id.
 
         :param task_id: ID of the server task
-        :type task_id: str or unicode
+        :type task_id: str | unicode
         :return: Details on the active server task
         :rtype: dict
         :raise arango.exceptions.TaskGetError: If retrieval fails.
@@ -1180,7 +1554,6 @@ class Database(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    # TODO verify which arguments are optional
     def create_task(self,
                     name,
                     command,
@@ -1191,9 +1564,9 @@ class Database(APIWrapper):
         """Create a new server task.
 
         :param name: Name of the server task.
-        :type name: str or unicode
+        :type name: str | unicode
         :param command: Javascript code to execute.
-        :type command: str or unicode
+        :type command: str | unicode
         :param params: Parameters passed into the command.
         :type params: dict
         :param period: Number of seconds to wait between executions. If set
@@ -1203,7 +1576,7 @@ class Database(APIWrapper):
         :param offset: Initial delay before execution in seconds.
         :type offset: int
         :param task_id: Pre-defined ID for the new server task.
-        :type task_id: str or unicode
+        :type task_id: str | unicode
         :return: Details on the new task.
         :rtype: dict
         :raise arango.exceptions.TaskCreateError: If create fails.
@@ -1243,7 +1616,7 @@ class Database(APIWrapper):
         """Delete the server task specified by ID.
 
         :param task_id: ID of the server task.
-        :type task_id: str or unicode
+        :type task_id: str | unicode
         :param ignore_missing: Do not raise an exception on missing task.
         :type ignore_missing: bool
         :return: True if the task was successfully deleted.
@@ -1256,10 +1629,11 @@ class Database(APIWrapper):
         )
 
         def response_handler(resp):
+            if resp.error_code == 1852 and ignore_missing:
+                return False
             if not resp.is_success:
-                if not (resp.status_code == 404 and ignore_missing):
-                    raise TaskDeleteError(resp)
-            return not resp.body['error']
+                raise TaskDeleteError(resp)
+            return True
 
         return self._execute(request, response_handler)
 
@@ -1271,7 +1645,7 @@ class Database(APIWrapper):
         """Return the details of all users.
 
         :return: Details of all users or just the usernames.
-        :rtype: [dict] or [str or unicode]
+        :rtype: [str | unicode | dict]
         :raise arango.exceptions.UserListError: If retrieval fails.
         """
         request = Request(
@@ -1294,7 +1668,7 @@ class Database(APIWrapper):
         """Return the details of a user.
 
         :param username: Details of the user
-        :type username: str or unicode
+        :type username: str | unicode
         :return: User details
         :rtype: dict
         :raise arango.exceptions.UserGetError: If retrieval fails
@@ -1319,9 +1693,9 @@ class Database(APIWrapper):
         """Create a new user.
 
         :param username: New username.
-        :type username: str or unicode
+        :type username: str | unicode
         :param password: Password.
-        :type password: str or unicode
+        :type password: str | unicode
         :param active: Whether the user is active.
         :type active: bool
         :param extra: Any extra data on the user.
@@ -1355,9 +1729,9 @@ class Database(APIWrapper):
         """Update an existing user.
 
         :param username: Username.
-        :type username: str or unicode
+        :type username: str | unicode
         :param password: New password.
-        :type password: str or unicode
+        :type password: str | unicode
         :param active: Whether the user is active.
         :type active: bool
         :param extra: Any extra data on the user.
@@ -1395,9 +1769,9 @@ class Database(APIWrapper):
         """Replace an existing user.
 
         :param username: Username.
-        :type username: str or unicode
+        :type username: str | unicode
         :param password: User's new password.
-        :type password: str or unicode
+        :type password: str | unicode
         :param active: Whether the user is active.
         :type active: bool
         :param extra: Any extra data on the user.
@@ -1433,7 +1807,7 @@ class Database(APIWrapper):
         """Delete an existing user.
 
         :param username: Username.
-        :type username: str or unicode
+        :type username: str | unicode
         :param ignore_missing: Do not raise an exception on missing user.
         :type ignore_missing: bool
         :return: True if the operation was successful, False if the user was
@@ -1459,7 +1833,7 @@ class Database(APIWrapper):
         """Return the user permissions for all databases and collections.
 
         :param username: Username.
-        :type username: str or unicode
+        :type username: str | unicode
         :return: Permissions for all databases and collections.
         :rtype: dict
         :raise: arango.exceptions.PermissionGetError: If retrieval fails.
@@ -1481,13 +1855,13 @@ class Database(APIWrapper):
         """Return the user permission for a specific database or collection.
 
         :param username: Username.
-        :type username: str or unicode
+        :type username: str | unicode
         :param database: Database name.
-        :type database: str or unicode
+        :type database: str | unicode
         :param collection: Collection name.
-        :type collection: str or unicode
+        :type collection: str | unicode
         :return: Permission for given database or collection.
-        :rtype: str or unicode
+        :rtype: str | unicode
         :raise: arango.exceptions.PermissionGetError: If retrieval fails.
         """
         endpoint = '/_api/user/{}/database/{}'.format(username, database)
@@ -1507,17 +1881,17 @@ class Database(APIWrapper):
                           permission,
                           database,
                           collection=None):
-        """Update user permission for a specific database or collection.
+        """Update user permission for given database/collection.
 
         :param username: Username.
-        :type username: str or unicode
+        :type username: str | unicode
         :param database: Database name.
-        :type database: str or unicode
+        :type database: str | unicode
         :param collection: Collection name.
-        :type collection: str or unicode
+        :type collection: str | unicode
         :param permission: Allowed values are "rw" (read and write), "ro"
             (read only) or "none" (no access).
-        :type permission: str or unicode
+        :type permission: str | unicode
         :return: True if the access was successfully granted.
         :rtype: bool
         :raise arango.exceptions.PermissionUpdateError: If operation fails.
@@ -1539,18 +1913,21 @@ class Database(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    def delete_permission(self, username, database, collection=None):
-        """Clear user permission for a specific database or collection.
+    def clear_permission(self, username, database, collection=None):
+        """Clear user permission for given database/collection.
+
+        The user permission is reset back to the default value (e.g. fallback
+        to database-level permission).
 
         :param username: Username.
-        :type username: str or unicode
+        :type username: str | unicode
         :param database: Database name.
-        :type database: str or unicode
+        :type database: str | unicode
         :param collection: Collection name.
-        :type collection: str or unicode
+        :type collection: str | unicode
         :return: True if the permission was successfully cleared.
         :rtype: bool
-        :raise arango.exceptions.PermissionDeleteError: If clear fails.
+        :raise arango.exceptions.PermissionClearError: If clear fails.
         """
         endpoint = '/_api/user/{}/database/{}'.format(username, database)
         if collection is not None:
@@ -1560,7 +1937,7 @@ class Database(APIWrapper):
         def response_handler(resp):
             if resp.is_success:
                 return True
-            raise PermissionDeleteError(resp)
+            raise PermissionClearError(resp)
 
         return self._execute(request, response_handler)
 
@@ -1572,11 +1949,11 @@ class Database(APIWrapper):
         """Return the IDs of asynchronous jobs with the given status.
 
         :param status: Job status ("pending" or "done").
-        :type status: str or unicode
-        :param count: Maximum number of job IDs to return.
+        :type status: str | unicode
+        :param count: Max number of job IDs to return.
         :type count: int
         :return: List of job IDs.
-        :rtype: [str or unicode]
+        :rtype: [str | unicode]
         :raise arango.exceptions.AsyncJobListError: If retrieval fails.
         """
         params = {}
@@ -1631,127 +2008,228 @@ class Database(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    #########################
-    # Pregel Job Management #
-    #########################
 
-    def pregel_job(self, job_id):
-        """Return the details of a Pregel job.
+class DefaultDatabase(Database):
+    """Database wrapper.
 
-        :param job_id: Pregel job ID.
-        :type job_id: int
-        :return: Details of the Pregel job.
-        :rtype: dict
-        :raise arango.exceptions.PregelJobGetError: If lookup fails.
-        """
-        request = Request(
-            method='get',
-            endpoint='/_api/control_pregel/{}'.format(job_id)
+    :param connection: HTTP connection.
+    :type connection: arango.connection.Connection
+    """
+
+    def __init__(self, connection):
+        super(DefaultDatabase, self).__init__(
+            connection=connection,
+            executor=DefaultExecutor(connection)
         )
 
-        def response_handler(resp):
-            if not resp.is_success:
-                raise PregelJobGetError(resp)
-            if 'edgeCount' in resp.body:
-                resp.body['edge_count'] = resp.body.pop('edgeCount')
-            if 'receivedCount' in resp.body:
-                resp.body['received_count'] = resp.body.pop('receivedCount')
-            if 'sendCount' in resp.body:
-                resp.body['send_count'] = resp.body.pop('sendCount')
-            if 'totalRuntime' in resp.body:
-                resp.body['total_runtime'] = resp.body.pop('totalRuntime')
-            if 'vertexCount' in resp.body:
-                resp.body['vertex_count'] = resp.body.pop('vertexCount')
-            return resp.body
+    def __repr__(self):
+        return '<DefaultDatabase {}>'.format(self.name)
 
-        return self._execute(request, response_handler)
+    def begin_async(self, return_result=True):
+        """Begin async API execution.
 
-    def create_pregel_job(self,
-                          algorithm,
-                          graph,
-                          store=True,
-                          max_gss=None,
-                          thread_count=None,
-                          async_mode=None,
-                          result_field=None,
-                          alg_params=None):
-        """Start a new Pregel job.
-
-        :param algorithm: Algorithm (e.g. "pagerank").
-        :type algorithm: str or unicode
-        :param graph: Graph name.
-        :type graph: str or unicode
-        :param store: If set to True, the Pregel engine writes results back to
-            the database. If set to False, the results can be queried via AQL.
-        :type store: bool
-        :param max_gss: Maximum number of global iterations for the algorithm.
-        :type max_gss: int
-        :param thread_count: Number of parallel threads to use per worker.
-            This does not influence the number of threads used to load or store
-            data from the database (this depends on the number of shards).
-        :type thread_count: int
-        :param async_mode: Algorithms which support async mode run without
-            synchronized global iterations. This might lead to performance
-            increase if there are load imbalances.
-        :type async_mode: bool
-        :param result_field: If specified, most algorithms will write their
-            results into the given field.
-        :type result_field: str or unicode
-        :param alg_params: Other algorithm parameters.
-        :type alg_params: dict
-        :return: Pregel job ID.
-        :rtype: int
-        :raise arango.exceptions.PregelJobCreateError: If create fails.
+        :param return_result: If set to True, API execution results are saved
+            server-side and instances of :class:`arango.job.AsyncJob` are
+            returned. If set to False, API executions return None and results
+            are not saved server-side.
+        :type return_result: bool
+        :return: New database wrapper. API requests made using this database
+            are queued up server-side and executed asynchronously.
+        :rtype: arango.database.AsyncDatabase
         """
-        data = {
-            'algorithm': algorithm,
-            'graphName': graph,
-        }
+        return AsyncDatabase(self._conn, return_result)
 
-        algorithm_params = {}
-        if store is not None:
-            algorithm_params['store'] = store
-        if max_gss is not None:
-            algorithm_params['maxGSS'] = max_gss
-        if thread_count is not None:
-            algorithm_params['parallelism'] = thread_count
-        if async_mode is not None:
-            algorithm_params['async'] = async_mode
-        if result_field is not None:
-            algorithm_params['resultField'] = result_field
-        if algorithm_params:
-            data['params'] = alg_params
+    def begin_batch(self, return_result=True):
+        """Begin batch API execution.
 
-        request = Request(
-            method='post',
-            endpoint='/_api/control_pregel',
-            data=data
+        :param return_result: If set to True, API executions return instances
+            of :class:`arango.job.BatchJob`. The job instances are populated
+            with results on commit. If set to False, API executions return None
+            instead and no results are saved client-side.
+        :type return_result: bool
+        :return: New database wrapper. API requests made using this database
+            are queued up client-side and executed in a batch on commit.
+        :rtype: arango.database.BatchDatabase
+        """
+        return BatchDatabase(self._conn, return_result)
+
+    def begin_transaction(self,
+                          return_result=True,
+                          timeout=None,
+                          sync=None,
+                          read=None,
+                          write=None):
+        """Begin transaction.
+
+        :param return_result: If set to True, API executions return instances
+            of :class:`arango.job.TransactionJob`. These job instances
+            are populated with results on commit. If set to False, executions
+            return None instead and no results are saved client-side.
+        :type return_result: bool
+        :param read: Names of collections read during the transaction. If not
+            specified, they are added automatically as jobs are queued.
+        :type read: [str | unicode]
+        :param write: Names of collections written to during the transaction.
+            If not specified, they are added automatically as jobs are queued.
+        :type write: [str | unicode]
+        :param timeout: Collection lock timeout.
+        :type timeout: int
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :return: New database wrapper. API requests made using this database
+            are queued up client-side and executed in a transaction on commit.
+        :rtype: arango.database.TransactionDatabase
+        """
+        return TransactionDatabase(
+            connection=self._conn,
+            return_result=return_result,
+            read=read,
+            write=write,
+            timeout=timeout,
+            sync=sync
         )
 
-        def response_handler(resp):
-            if resp.is_success:
-                return resp.body
-            raise PregelJobCreateError(resp)
 
-        return self._execute(request, response_handler)
+class AsyncDatabase(Database):
+    """Database wrapper specifically for async API executions.
 
-    def delete_pregel_job(self, job_id):
-        """Cancel a Pregel job.
+    :param connection: HTTP connection.
+    :type connection: arango.connection.Connection
+    :param return_result: If set to True, API execution results are saved
+        server-side and instances of :class:`arango.job.AsyncJob` are returned.
+        If set to False, API executions return None and results are not saved
+        server-side.
+    :type return_result: bool
+    """
 
-        :param job_id: Pregel job ID.
-        :type job_id: int
-        :return: True if the Pregel job was cancelled successfully.
-        :rtype: bool
-        :raise arango.exceptions.PregelJobDeleteError: If cancel fails.
-        """
-        request = Request(
-            method='delete',
-            endpoint='/_api/control_pregel/{}'.format(job_id)
+    def __init__(self, connection, return_result):
+        super(AsyncDatabase, self).__init__(
+            connection=connection,
+            executor=AsyncExecutor(connection, return_result)
         )
 
-        def response_handler(resp):
-            if resp.is_success:
-                return True
-            raise PregelJobDeleteError(resp)
+    def __repr__(self):
+        return '<AsyncDatabase {}>'.format(self.name)
 
-        return self._execute(request, response_handler)
+
+class BatchDatabase(Database):
+    """Database wrapper specifically for batch API executions.
+
+    :param connection: HTTP connection.
+    :type connection: arango.connection.Connection
+    :param return_result: If set to True, API executions return instances
+        of :class:`arango.job.BatchJob`. The job instances are populated with
+        results on commit. If set to False, API executions return None instead
+        and no results are saved client-side.
+    :type return_result: bool
+    """
+
+    def __init__(self, connection, return_result):
+        super(BatchDatabase, self).__init__(
+            connection=connection,
+            executor=BatchExecutor(connection, return_result)
+        )
+
+    def __repr__(self):
+        return '<BatchDatabase {}>'.format(self.name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exception, *_):
+        if exception is None:
+            self._executor.commit()
+
+    def queued_jobs(self):
+        """Return the queued batch jobs.
+
+        :return: Batch jobs or None if **return_result** parameter was set to
+            False during initialization.
+        :rtype: [arango.job.BatchJob] | None
+        """
+        return self._executor.jobs
+
+    def commit(self):
+        """Execute the queued requests in a single batch API request.
+
+        If **return_result** parameter was set to True during initialization,
+        :class:`arango.job.BatchJob` instances are populated with results.
+
+        :return: Batch jobs or None if **return_result** parameter was set to
+            False during initialization.
+        :rtype: [arango.job.BatchJob] | None
+        :raise arango.exceptions.BatchStateError: If batch state is invalid
+            (e.g. batch was already committed or the response size did not
+            match the expected).
+        :raise arango.exceptions.BatchExecuteError: If commit fails.
+        """
+        return self._executor.commit()
+
+
+class TransactionDatabase(Database):
+    """Database wrapper specifically for transactions.
+
+    :param connection: HTTP connection.
+    :type connection: arango.connection.Connection
+    :param return_result: If set to True, API executions return instances
+        of :class:`arango.job.TransactionJob`. These job instances are
+        populated with results on commit. If set to False, executions return
+        None instead and no results are saved client-side.
+    :type return_result: bool
+    :param read: Names of collections read during the transaction.
+    :type read: [str | unicode]
+    :param write: Names of collections written to during the transaction.
+    :type write: [str | unicode]
+    :param timeout: Collection lock timeout.
+    :type timeout: int
+    :param sync: Block until the operation is synchronized to disk.
+    :type sync: bool
+    """
+
+    def __init__(self, connection, return_result, read, write, timeout, sync):
+        super(TransactionDatabase, self).__init__(
+            connection=connection,
+            executor=TransactionExecutor(
+                connection=connection,
+                return_result=return_result,
+                read=read,
+                write=write,
+                timeout=timeout,
+                sync=sync
+            )
+        )
+
+    def __repr__(self):
+        return '<TransactionDatabase {}>'.format(self.name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exception, *_):
+        if exception is None:
+            self._executor.commit()
+
+    def queued_jobs(self):
+        """Return the queued transaction jobs.
+
+        :return: Transaction jobs or None if **return_result** parameter was
+            set to False during initialization.
+        :rtype: [arango.job.TransactionJob] | None
+        """
+        return self._executor.jobs
+
+    def commit(self):
+        """Execute the queued requests in a single transaction API request.
+
+        If **return_result** parameter was set to True during initialization,
+        :class:`arango.job.TransactionJob` instances are populated with
+        results.
+
+        :return: Transaction jobs or None if **return_result** parameter was
+            set to False during initialization.
+        :rtype: [arango.job.TransactionJob] | None
+        :raise arango.exceptions.TransactionStateError: If the transaction was
+            already committed.
+        :raise arango.exceptions.TransactionExecuteError: If commit fails.
+        """
+        return self._executor.commit()

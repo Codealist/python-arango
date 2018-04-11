@@ -1,6 +1,5 @@
 from __future__ import absolute_import, unicode_literals
 
-import pytest
 from six import string_types
 
 from arango.exceptions import (
@@ -12,14 +11,17 @@ from arango.exceptions import (
     UserReplaceError,
     UserUpdateError,
 )
-from tests.utils import (
+from tests.helpers import (
+    assert_raises,
+    extract,
+    generate_db_name,
     generate_username,
-    generate_database_name,
     generate_string,
-    extract)
+)
 
 
 def test_user_management(sys_db, bad_db):
+    # Test create user
     username = generate_username()
     password = generate_string()
     new_user = sys_db.create_user(
@@ -32,34 +34,40 @@ def test_user_management(sys_db, bad_db):
     assert new_user['active'] is True
     assert new_user['extra'] == {'foo': 'bar'}
 
-    # Create a duplicate user
-    with pytest.raises(UserCreateError) as err:
+    # Test create duplicate user
+    with assert_raises(UserCreateError) as err:
         sys_db.create_user(
             username=username,
             password=password
         )
-    assert 'duplicate' in str(err.value)
+    assert err.value.error_code == 1702
 
-    # Test get users
+    # Test list users
     for user in sys_db.users():
         assert isinstance(user['username'], string_types)
         assert isinstance(user['active'], bool)
         assert isinstance(user['extra'], dict)
     assert sys_db.user(username) == new_user
 
-    # Test get users with bad credentials
-    with pytest.raises(UserListError):
+    # Test list users with bad database
+    with assert_raises(UserListError) as err:
         bad_db.users()
+    assert err.value.error_code == 1228
 
     # Test get user
+    users = sys_db.users()
+    for user in users:
+        assert 'active' in user
+        assert 'extra' in user
+        assert 'username' in user
     assert username in extract('username', sys_db.users())
 
-    # Test get user with bad credentials
-    with pytest.raises(UserGetError) as err:
+    # Test get missing user
+    with assert_raises(UserGetError) as err:
         sys_db.user(generate_username())
-    assert err.value.http_code == 404
+    assert err.value.error_code == 1703
 
-    # Update an existing user
+    # Update existing user
     new_user = sys_db.update_user(
         username=username,
         password=password,
@@ -71,15 +79,15 @@ def test_user_management(sys_db, bad_db):
     assert new_user['extra'] == {'bar': 'baz'}
     assert sys_db.user(username) == new_user
 
-    # Update a missing user
-    with pytest.raises(UserUpdateError) as err:
+    # Update missing user
+    with assert_raises(UserUpdateError) as err:
         sys_db.update_user(
             username=generate_username(),
             password=generate_string()
         )
-    assert err.value.http_code == 404
+    assert err.value.error_code == 1703
 
-    # Replace an existing user
+    # Replace existing user
     new_user = sys_db.replace_user(
         username=username,
         password=password,
@@ -91,21 +99,21 @@ def test_user_management(sys_db, bad_db):
     assert new_user['extra'] == {'baz': 'qux'}
     assert sys_db.user(username) == new_user
 
-    # Replace a missing user
-    with pytest.raises(UserReplaceError) as err:
+    # Replace missing user
+    with assert_raises(UserReplaceError) as err:
         sys_db.replace_user(
             username=generate_username(),
             password=generate_string()
         )
-    assert err.value.http_code == 404
+    assert err.value.error_code == 1703
 
     # Delete an existing user
     assert sys_db.delete_user(username) is True
 
     # Delete a missing user
-    with pytest.raises(UserDeleteError) as err:
+    with assert_raises(UserDeleteError) as err:
         sys_db.delete_user(username, ignore_missing=False)
-    assert err.value.http_code == 404
+    assert err.value.error_code == 1703
     assert sys_db.delete_user(username, ignore_missing=True) is False
 
 
@@ -121,28 +129,28 @@ def test_user_change_password(client, sys_db):
     db2 = client.db(sys_db.name, username, password2, verify=False)
 
     # Check authentication
-    db1.properties()
-    with pytest.raises(DatabasePropertiesError) as err:
+    assert isinstance(db1.properties(), dict)
+    with assert_raises(DatabasePropertiesError) as err:
         db2.properties()
-    assert err.value.http_code in {401, 403}
+    assert err.value.http_code == 401
 
     # Update the user password and check again
     sys_db.update_user(username, password2)
-    db2.properties()
-    with pytest.raises(DatabasePropertiesError) as err:
+    assert isinstance(db2.properties(), dict)
+    with assert_raises(DatabasePropertiesError) as err:
         db1.properties()
-    assert err.value.http_code in {401, 403}
+    assert err.value.http_code == 401
 
-    # Replace the user password and check again
+    # Replace the user password back and check again
     sys_db.update_user(username, password1)
-    db1.properties()
-    with pytest.raises(DatabasePropertiesError) as err:
+    assert isinstance(db1.properties(), dict)
+    with assert_raises(DatabasePropertiesError) as err:
         db2.properties()
-    assert err.value.http_code in {401, 403}
+    assert err.value.http_code == 401
 
 
 def test_user_create_with_new_database(client, sys_db):
-    db_name = generate_database_name()
+    db_name = generate_db_name()
 
     username1 = generate_username()
     username2 = generate_username()
@@ -176,6 +184,6 @@ def test_user_create_with_new_database(client, sys_db):
 
     # Test if the third user has access to the database (should not)
     db = client.db(db_name, username3, password3, verify=False)
-    with pytest.raises(DatabasePropertiesError) as err:
+    with assert_raises(DatabasePropertiesError) as err:
         db.properties()
-    assert err.value.http_code in {401, 403}
+    assert err.value.http_code == 401

@@ -1,8 +1,8 @@
 from __future__ import absolute_import, unicode_literals
 
-from json import dumps
+__all__ = ['DefaultCollection', 'VertexCollection', 'EdgeCollection']
 
-__all__ = ['Collection', 'VertexCollection', 'EdgeCollection']
+from json import dumps
 
 from arango.api import APIWrapper
 from arango.cursor import Cursor
@@ -31,21 +31,21 @@ from arango.exceptions import (
     IndexCreateError,
     IndexDeleteError,
     IndexListError,
+    IndexLoadError,
 )
 from arango.request import Request
 from arango.response import Response
-from arango.utils import is_list, is_str, is_int, is_dict
 
 
-class Base(APIWrapper):
+class Collection(APIWrapper):
     """Base for ArangoDB collection classes.
 
     :param connection: HTTP connection.
     :type connection: arango.connection.Connection
     :param executor: API executor.
-    :type executor: arango.api.APIExecutor
+    :type executor: arango.executor.DefaultExecutor
     :param name: Collection name.
-    :type name: str or unicode
+    :type name: str | unicode
     """
 
     types = {
@@ -63,8 +63,9 @@ class Base(APIWrapper):
     }
 
     def __init__(self, connection, executor, name):
-        super(Base, self).__init__(connection, executor)
+        super(Collection, self).__init__(connection, executor)
         self._name = name
+        self._id_prefix = name + '/'
 
     def __iter__(self):
         return self.all()
@@ -73,20 +74,20 @@ class Base(APIWrapper):
         return self.count()
 
     def __contains__(self, document):
-        return self.has(document, check_rev=True)
+        return self.has(document, check_rev=False)
 
-    def _get_status_string(self, code):
+    def _get_status_string(self, code):  # pragma: no cover
         """Return the collection status text.
 
         :param code: Collection status code.
         :type code: int
-        :return: Collection status text or None.
-        :rtype: str or unicode
+        :return: Collection status text or None if code is None.
+        :rtype: str | unicode
         :raise arango.exceptions.CollectionBadStatusError: On unknown status.
         """
-        return code if code is None else self.statuses[code]
+        return None if code is None else self.statuses[code]
 
-    def _format_properties(self, body):
+    def _format_properties(self, body):  # pragma: no cover
         """Format the collection properties.
 
         :param body: Response body.
@@ -94,13 +95,11 @@ class Base(APIWrapper):
         :return: Formatted body.
         :rtype: dict
         """
-        if 'code' in body:
-            body.pop('code')
-        if 'error' in body:
-            body.pop('error')
+        body.pop('code', None)
+        body.pop('error', None)
+
         if 'name' not in body:
             body['name'] = self.name
-
         if 'isSystem' in body:
             body['system'] = body.pop('isSystem')
         if 'type' in body:
@@ -145,81 +144,124 @@ class Base(APIWrapper):
             body['user_keys'] = key_options['allowUserKeys']
         if 'lastValue' in key_options:
             body['key_last_value'] = key_options['lastValue']
-
         return body
 
-    def _extract_key(self, doc):
-        """Return the document key from its ID or key.
+    def _validate_id(self, doc_id):
+        """Check the collection name in the document ID.
 
-        :param doc: Document ID or key.
-        :type doc: str or unicode
-        :return: Document key.
-        :rtype: str or unicode
-        :raise arango.exceptions.DocumentParseError: If input is malformed.
+        :param doc_id: Document ID.
+        :type doc_id: str | unicode
+        :return: Verified document ID.
+        :rtype: str | unicode
+        :raise arango.exceptions.DocumentParseError: On bad collection name.
         """
-        parts = doc.split('/', 1)
-        if len(parts) == 2 and parts[0] != self.name:
+        if not doc_id.startswith(self._id_prefix):
             raise DocumentParseError(
-                message='bad collection name "{}"'.format(parts[0]))
-        return parts[-1]
+                'bad collection name in document ID "{}"'.format(doc_id))
+        return doc_id
 
-    def _get_key_and_rev(self, doc):
-        """Return the document key and rev from document ID, body or key.
+    def _extract_id(self, body):
+        """Return the document ID from document body.
 
-        :param doc: Document ID, body or key.
-        :type doc: str or unicode or dict
-        :return: Document key and rev.
-        :rtype: (str or unicode, str or unicode or None)
-        :raise arango.exceptions.DocumentParseError: If input is malformed.
+        :param body: Document body.
+        :type body: dict
+        :return: Document ID.
+        :rtype: str | unicode
+        :raise arango.exceptions.DocumentParseError: On missing ID and key.
         """
-        if is_str(doc):
-            return self._extract_key(doc) if '/' in doc else doc, None
-        elif '_key' in doc:
-            return doc['_key'], doc.get('_rev')
-        elif '_id' in doc:
-            return self._extract_key(doc['_id']), doc.get('_rev')
-        raise DocumentParseError(message='malformed document body')
+        try:
+            if '_id' in body:
+                return self._validate_id(body['_id'])
+            else:
+                return self._id_prefix + body['_key']
+        except KeyError:
+            raise DocumentParseError('field "_key" or "_id" required')
 
-    def _get_key(self, doc):
-        """Return the document key from document ID, body or key.
+    def _prep_from_body(self, document, check_rev):
+        """Prepare document ID and request headers.
 
-        :param doc: Document ID, body or key.
-        :type doc: str or unicode or dict
-        :return: Document key.
-        :rtype: str or unicode
-        :raise arango.exceptions.DocumentParseError: If input is malformed.
+        :param document: Document body.
+        :type document: str | unicode | dict
+        :param check_rev: Whether the check the revision.
+        :type check_rev: bool
+        :return: Document ID and request headers.
+        :rtype: (str | unicode, dict)
         """
-        if is_str(doc):
-            return self._extract_key(doc) if '/' in doc else doc
-        elif '_key' in doc:
-            return doc['_key']
-        elif '_id' in doc:
-            return self._extract_key(doc['_id'])
-        raise DocumentParseError(message='malformed document body')
+        doc_id = self._extract_id(document)
+        if not check_rev or '_rev' not in document:
+            return doc_id, {}
+        return doc_id, {'If-Match': document['_rev']}
+
+    def _prep_from_doc(self, document, rev, check_rev):
+        """Prepare document ID, body and request headers.
+
+        :param document: Document ID, key or body.
+        :type document: str | unicode | dict
+        :param rev: Document revision if any.
+        :type rev: str | unicode | None
+        :param check_rev: Whether the check the revision.
+        :type check_rev: bool
+        :return: Document ID, body and request headers.
+        :rtype: (str | unicode, str | unicode | body, dict)
+        """
+        if isinstance(document, dict):
+            doc_id = self._extract_id(document)
+            rev = rev or document.get('_rev')
+
+            if not check_rev or rev is None:
+                return doc_id, doc_id, {}
+            elif self._is_transaction:
+                body = document.copy()
+                body['_rev'] = rev
+                return doc_id, body, {'If-Match': rev}
+            else:
+                return doc_id, doc_id, {'If-Match': rev}
+        else:
+            if '/' in document:
+                doc_id = self._validate_id(document)
+            else:
+                doc_id = self._id_prefix + document
+
+            if not check_rev or rev is None:
+                return doc_id, doc_id, {}
+            elif self._is_transaction:
+                body = {'_id': doc_id, '_rev': rev}
+                return doc_id, body, {'If-Match': rev}
+            else:
+                return doc_id, doc_id, {'If-Match': rev}
+
+    def _put_key_in_body(self, body):
+        """Return the document body with "_key" field populated.
+
+        :param body: Document body.
+        :type body: dict
+        :return: Document body with "_key" field.
+        :rtype: dict
+        :raise arango.exceptions.DocumentParseError: On missing ID and key.
+        """
+        if '_key' in body:
+            return body
+        elif '_id' in body:
+            doc_id = self._validate_id(body['_id'])
+            body = body.copy()
+            body['_key'] = doc_id[len(self._id_prefix):]
+            return body
+        raise DocumentParseError('field "_key" or "_id" required')
 
     @property
     def name(self):
         """Return the name of the collection.
 
-        :return: Collection name
-        :rtype: str or unicode
+        :return: Collection name.
+        :rtype: str | unicode
         """
         return self._name
-
-    @property
-    def database(self):
-        """Return the name of the database the collection belongs to.
-
-        :return: Database name.
-        :rtype: str or unicode
-        """
-        return self._conn.database
 
     def rename(self, new_name):
         """Rename the collection.
 
-        :param new_name: New name for the collection.
-        :type new_name: str or unicode
+        :param new_name: New collection name.
+        :type new_name: str | unicode
         :return: True if the rename was successful.
         :rtype: bool
         :raise arango.exceptions.CollectionRenameError: If rename fails.
@@ -229,21 +271,20 @@ class Base(APIWrapper):
             or transaction API execution context.
 
         .. warning::
-            Collection renames may not be reflected in the wrappers. It is
-            recommended to use new collection wrapper objects after a rename.
+            The collection object may not be up-to-date with the new name. It
+            is recommended to use new collection objects after a rename.
         """
         request = Request(
             method='put',
             endpoint='/_api/collection/{}/rename'.format(self.name),
-            data={'name': new_name},
-            command='db.{}.rename({})'.format(self.name, new_name),
-            write=self.name
+            data={'name': new_name}
         )
 
         def response_handler(resp):
             if not resp.is_success:
                 raise CollectionRenameError(resp)
             self._name = new_name
+            self._id_prefix = new_name + '/'
             return True
 
         return self._execute(request, response_handler)
@@ -270,11 +311,11 @@ class Base(APIWrapper):
         return self._execute(request, response_handler)
 
     def configure(self, sync=None, journal_size=None):
-        """Set the collection properties.
+        """Configure the collection properties.
 
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :param journal_size: Journal size.
+        :param journal_size: Journal size in bytes.
         :type journal_size: int
         :return: New collection properties.
         :rtype: dict
@@ -289,9 +330,7 @@ class Base(APIWrapper):
         request = Request(
             method='put',
             endpoint='/_api/collection/{}/properties'.format(self.name),
-            data=data,
-            command = 'db.{}.properties({})'.format(self.name, dumps(data)),
-            read = self.name
+            data=data
         )
 
         def response_handler(resp):
@@ -320,15 +359,25 @@ class Base(APIWrapper):
                 raise CollectionStatisticsError(resp)
 
             stats = resp.body.get('figures', resp.body)
+            for field in ['compactors', 'datafiles', 'journals']:
+                if field in stats and 'fileSize' in stats[field]:
+                    stats[field]['file_size'] = stats[field].pop('fileSize')
             if 'compactionStatus' in stats:
-                stats['compaction_status'] = stats.pop('compactionStatus')
+                status = stats.pop('compactionStatus')
+                if 'bytesRead' in status:
+                    status['bytes_read'] = status.pop('bytesRead')
+                if 'bytesWritten' in status:
+                    status['bytes_written'] = status.pop('bytesWritten')
+                if 'filesCombined' in status:
+                    status['files_combined'] = status.pop('filesCombined')
+                stats['compaction_status'] = status
             if 'documentReferences' in stats:
                 stats['document_refs'] = stats.pop('documentReferences')
             if 'lastTick' in stats:
                 stats['last_tick'] = stats.pop('lastTick')
             if 'waitingFor' in stats:
                 stats['waiting_for'] = stats.pop('waitingFor')
-            if 'documentsSize' in stats:
+            if 'documentsSize' in stats:  # pragma: no cover
                 stats['documents_size'] = stats.pop('documentsSize')
             if 'uncollectedLogfileEntries' in stats:
                 stats['uncollected_logfile_entries'] = \
@@ -341,7 +390,7 @@ class Base(APIWrapper):
         """Return the collection revision.
 
         :return: Collection revision.
-        :rtype: str or unicode
+        :rtype: str | unicode
         :raise arango.exceptions.CollectionRevisionError: If retrieval fails.
         """
         request = Request(
@@ -354,21 +403,21 @@ class Base(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise CollectionRevisionError(resp)
-            if is_dict(resp.body):
-                return resp.body['revision']
-            return resp.body
+            if self._is_transaction:
+                return str(resp.body)
+            return resp.body['revision']
 
         return self._execute(request, response_handler)
 
     def checksum(self, with_rev=False, with_data=False):
         """Return the collection checksum.
 
-        :param with_rev: Include document revisions in checksum calculations.
+        :param with_rev: Include document revisions in checksum calculation.
         :type with_rev: bool
-        :param with_data: Include document data in checksum calculations.
+        :param with_data: Include document data in checksum calculation.
         :type with_data: bool
         :return: Collection checksum.
-        :rtype: str or unicode
+        :rtype: str | unicode
         :raise arango.exceptions.CollectionChecksumError: If retrieval fails.
         """
         request = Request(
@@ -443,16 +492,16 @@ class Base(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise CollectionRotateJournalError(resp)
-            return True
+            return True  # pragma: no cover
 
         return self._execute(request, response_handler)
 
     def truncate(self):
         """Delete all documents in the collection.
 
-        :return: True if the truncate was successful.
+        :return: True if the truncation was successful.
         :rtype: dict
-        :raise arango.exceptions.CollectionTruncateError: If truncate fails.
+        :raise arango.exceptions.CollectionTruncateError: If truncation fails.
         """
         request = Request(
             method='put',
@@ -469,7 +518,7 @@ class Base(APIWrapper):
         return self._execute(request, response_handler)
 
     def count(self):
-        """Return the number of documents in the collection.
+        """Return the total number of documents in the collection.
 
         :return: Number of documents.
         :rtype: int
@@ -485,65 +534,59 @@ class Base(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentCountError(resp)
-            return resp.body if is_int(resp.body) else resp.body['count']
+            if self._is_transaction:
+                return resp.body
+            return resp.body['count']
 
         return self._execute(request, response_handler)
 
     def has(self, document, rev=None, check_rev=True):
         """Check if a document exists in the collection.
 
-        :param document: Document body, ID or key.
-        :type document: dict or str or unicode
+        :param document: Document ID, key or body. Document body must contain
+            the "_id" or "_key" field.
+        :type document: str | unicode | dict
         :param rev: Expected document revision. Overrides the value of "_rev"
-            field in **document** if present.
-        :type rev: str or unicode
-        :param check_rev: If set to True, the revision of **document** (if
-            present) is compared against the revision of the target document.
+            field in **document** if any.
+        :type rev: str | unicode
+        :param check_rev: If set to True, the revision of **document** (if any)
+            is compared against the revision of the target document.
         :type check_rev: bool
         :return: True if the document exists, False otherwise.
         :rtype: bool
         :raise arango.exceptions.DocumentInError: If check fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
         """
-        key, _rev = self._get_key_and_rev(document)
+        handle, body, headers = self._prep_from_doc(document, rev, check_rev)
 
-        headers = {}
-        if rev is None:
-            rev = _rev
-        if check_rev and rev is not None:
-            headers['If-Match'] = rev
-
-        if self.context != 'transaction':
-            command = None
-        else:
-            document = {'_key': key}
-            if check_rev and rev is not None:
-                document['_rev'] = rev
-            command = 'db.{}.exists({})'.format(self.name, dumps(document))
+        command = 'db.{}.exists({})'.format(
+            self.name,
+            dumps(body)
+        ) if self._is_transaction else None
 
         request = Request(
             method='get',
-            endpoint='/_api/document/{}/{}'.format(self.name, key),
+            endpoint='/_api/document/{}'.format(handle),
             headers=headers,
             command=command,
             read=self.name
         )
 
         def response_handler(resp):
-            if resp.status_code in {304, 412}:
-                raise DocumentRevisionError(resp)
-            elif resp.status_code == 404 and resp.error_code == 1202:
+            if resp.error_code == 1202:
                 return False
-            elif resp.is_success:
-                return bool(resp.body)
-            raise DocumentInError(resp)
+            if resp.status_code == 412:
+                raise DocumentRevisionError(resp)
+            if not resp.is_success:
+                raise DocumentInError(resp)
+            return bool(resp.body)
 
         return self._execute(request, response_handler)
 
     def ids(self):
         """Return the IDs of all documents in the collection.
 
-        :return: Cursor or list of document IDs.
+        :return: Document ID cursor.
         :rtype: arango.cursor.Cursor
         :raise arango.exceptions.DocumentIDsError: If retrieval fails.
         """
@@ -551,7 +594,7 @@ class Base(APIWrapper):
             method='put',
             endpoint='/_api/simple/all-keys',
             data={'collection': self.name, 'type': 'id'},
-            command='db.{}.all().toArray().map(d => d._id)'.format(self.name),
+            command='db.{}.toArray().map(d => d._id)'.format(self.name),
             read=self.name
         )
 
@@ -565,7 +608,7 @@ class Base(APIWrapper):
     def keys(self):
         """Return the keys of all documents in the collection.
 
-        :return: Cursor of document keys.
+        :return: Document key cursor.
         :rtype: arango.cursor.Cursor
         :raise arango.exceptions.DocumentKeysError: If retrieval fails.
         """
@@ -573,9 +616,8 @@ class Base(APIWrapper):
             method='put',
             endpoint='/_api/simple/all-keys',
             data={'collection': self.name, 'type': 'key'},
-            command='db.{}.all().toArray().map(d => d._key)'.format(self.name),
-            read=self.name,
-            write=self.name
+            command='db.{}.toArray().map(d => d._key)'.format(self.name),
+            read=self.name
         )
 
         def response_handler(resp):
@@ -586,11 +628,12 @@ class Base(APIWrapper):
         return self._execute(request, response_handler)
 
     def all(self, skip=None, limit=None):
-        """Return all documents in the collection using a server cursor.
+        """Return all documents in the collection.
 
         :param skip: Number of documents to skip.
         :type skip: int
-        :param limit: Max number of documents fetched by the cursor.
+        :param limit: Max number of documents fetched by the cursor. Default
+            value is 100. Values 0 or under are ignored.
         :type limit: int
         :return: Document cursor.
         :rtype: arango.cursor.Cursor
@@ -599,14 +642,19 @@ class Base(APIWrapper):
         data = {'collection': self.name}
         if skip is not None:
             data['skip'] = skip
-        if limit is not None:
+        if limit is not None and limit != 0:
             data['limit'] = limit
 
-        command = 'db.{}.all().toArray().slice({}).slice(0, {})'.format(
-            self.name,
-            0 if skip is None else skip,
-            -1 if limit is None else limit
-        )
+        if self._is_transaction:
+            command = 'db.{}.all()'.format(self.name)
+            if skip is not None:
+                command += '.skip({})'.format(skip)
+            if limit is not None:
+                command += '.limit({})'.format(limit)
+            command += '.toArray()'
+        else:
+            command = None
+
         request = Request(
             method='put',
             endpoint='/_api/simple/all',
@@ -631,27 +679,27 @@ class Base(APIWrapper):
                ttl=None,
                filter_fields=None,
                filter_type='include'):
-        """"Export all documents in the collection using a server cursor.
+        """Export all documents in the collection using a server cursor.
 
-        :param flush: If set to True, flush the WAL prior to the export. If set
-            to False, documents in WAL during export are not included by the
-            server cursor.
+        :param flush: If set to True, flush the write-ahead log prior to the
+            export. If set to False, documents in the write-ahead log during
+            the export are not included in the result.
         :type flush: bool
-        :param flush_wait: Maximum wait time in seconds for the WAL flush.
+        :param flush_wait: Max wait time in seconds for write-ahead log flush.
         :type flush_wait: int
         :param count: Include the document count in the server cursor.
         :type count: bool
-        :param batch_size: Maximum number of documents in the batch fetched by
+        :param batch_size: Max number of documents in the batch fetched by
             the cursor in one round trip.
         :type batch_size: int
-        :param limit: Maximum number of documents fetched by the cursor.
+        :param limit: Max number of documents fetched by the cursor.
         :type limit: int
         :param ttl: Time-to-live for the cursor on the server.
         :type ttl: int
-        :param filter_fields: Fields used to filter documents.
-        :type filter_fields: [str or unicode]
+        :param filter_fields: Document fields to filter with.
+        :type filter_fields: [str | unicode]
         :param filter_type: Allowed values are "include" or "exclude".
-        :type filter_type: str or unicode
+        :type filter_type: str | unicode
         :return: Document cursor.
         :rtype: arango.cursor.Cursor
         :raise arango.exceptions.DocumentGetError: If export fails.
@@ -686,69 +734,40 @@ class Base(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    def find(self, filters, offset=None, limit=None):
+    def find(self, filters, skip=0, limit=100):
         """Return all documents that match the given filters.
 
         :param filters: Document filters.
         :type filters: dict
-        :param offset: Number of documents to skip.
-        :type offset: int
-        :param limit: Maximum number of documents to return.
+        :param skip: Number of documents to skip.
+        :type skip: int
+        :param limit: Max number of documents fetched by the cursor. Default
+            value is 100. Values 0 or under are ignored.
         :type limit: int
         :return: Document cursor.
-        :rtype: arango.cursor.Cursor or list
+        :rtype: arango.cursor.Cursor
         :raise arango.exceptions.DocumentGetError: If retrieval fails.
         """
-        data = {'collection': self.name, 'example': filters}
-        if offset is not None:
-            data['skip'] = offset
-        if limit is not None:
-            data['limit'] = limit
+        limit = 100 if limit < 1 else limit
 
-        cmd = 'db.{}.byExample({}).toArray().slice({}).slice(0, {})'.format(
+        data = {
+            'collection': self.name,
+            'example': filters,
+            'skip': skip,
+            'limit': limit
+        }
+
+        command = 'db.{}.byExample({}).skip({}).limit({}).toArray()'.format(
             self.name,
             dumps(filters),
-            0 if offset is None else offset,
-            -1 if limit is None else limit
-        ) if self.context == 'transaction' else None
+            dumps(skip),
+            dumps(limit)
+        ) if self._is_transaction else None
 
         request = Request(
             method='put',
             endpoint='/_api/simple/by-example',
             data=data,
-            command=cmd,
-            read=self.name
-        )
-
-        def response_handler(resp):
-            if not resp.is_success:
-                raise DocumentGetError(resp)
-            if is_list(resp.body):
-                return resp.body
-            return Cursor(self._conn, resp.body)
-
-        return self._execute(request, response_handler)
-
-    def get_many(self, documents):
-        """Return multiple documents.
-
-        :param documents: List of document bodies, keys, or IDs.
-        :type documents: [str or unicode or dict]
-        :return: Documents.
-        :rtype: [dict]
-        :raise arango.exceptions.DocumentGetError: If retrieval fails.
-        """
-        keys = [self._get_key(d) for d in documents]
-
-        command = 'db.{}.document({})'.format(
-            self.name,
-            dumps(keys)
-        ) if self.context == 'transaction' else None
-
-        request = Request(
-            method='put',
-            endpoint='/_api/simple/lookup-by-keys',
-            data={'collection': self.name, 'keys': keys},
             command=command,
             read=self.name
         )
@@ -756,9 +775,344 @@ class Base(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentGetError(resp)
-            if is_dict(resp.body):
-                return resp.body['documents']
-            return resp.body
+            return Cursor(self._conn, resp.body)
+
+        return self._execute(request, response_handler)
+
+    def find_near(self, latitude, longitude, limit=100):
+        """Return documents near a given coordinate.
+
+        Documents returned are sorted according to distance, with the nearest
+        document being the first. If there are documents of equal distance,
+        they are randomly chosen from the set until the limit is reached.
+
+        :param latitude: Latitude.
+        :type latitude: int | float
+        :param longitude: Longitude.
+        :type longitude: int | float
+        :param limit: Max number of documents fetched by the cursor. Default
+            value is 100. Values 0 or under are ignored.
+        :type limit: int
+        :returns: Document cursor.
+        :rtype: arango.cursor.Cursor
+        :raises arango.exceptions.DocumentGetError: If retrieval fails.
+
+        .. note::
+            Appropriate geo index must be defined in the collection.
+        """
+        limit = 100 if limit < 1 else limit
+
+        query = """
+        FOR doc IN NEAR(@collection, @latitude, @longitude, @limit)
+            RETURN doc
+        """
+
+        bind_vars = {
+            'collection': self._name,
+            'latitude': latitude,
+            'longitude': longitude,
+            'limit': limit
+        }
+
+        command = 'db.{}.near({},{}).limit({}).toArray()'.format(
+            self.name,
+            dumps(latitude),
+            dumps(longitude),
+            dumps(limit)
+        ) if self._is_transaction else None
+
+        request = Request(
+            method='post',
+            endpoint='/_api/cursor',
+            data={'query': query, 'bindVars': bind_vars, 'count': True},
+            command=command,
+            read=self.name
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise DocumentGetError(resp)
+            return Cursor(self._conn, resp.body)
+
+        return self._execute(request, response_handler)
+
+    def find_in_range(self,
+                      field,
+                      lower,
+                      upper,
+                      skip=0,
+                      limit=100):
+        """Return documents within a given range in a random order.
+
+        :param field: Document field name.
+        :type field: str | unicode
+        :param lower: Lower bound (inclusive).
+        :type lower: int
+        :param upper: Upper bound (exclusive).
+        :type upper: int
+        :param skip: Number of documents to skip.
+        :type skip: int
+        :param limit: Max number of documents fetched by the cursor. Default
+            value is 100. Values 0 or under are ignored.
+        :type limit: int
+        :returns: Document cursor.
+        :rtype: arango.cursor.Cursor
+        :raises arango.exceptions.DocumentGetError: If retrieval fails.
+
+        .. note::
+            Appropriate skiplist index must be defined in the collection.
+        """
+        limit = 100 if limit < 1 else limit
+
+        query = """
+        FOR doc IN @@collection
+            FILTER doc.@field >= @lower && doc.@field < @upper
+            LIMIT @skip, @limit
+            RETURN doc
+        """
+
+        bind_vars = {
+            '@collection': self._name,
+            'field': field,
+            'lower': lower,
+            'upper': upper,
+            'skip': skip,
+            'limit': limit
+        }
+
+        command = 'db.{}.range({},{},{}).skip({}).limit({}).toArray()'.format(
+            self.name,
+            dumps(field),
+            dumps(lower),
+            dumps(upper),
+            dumps(skip),
+            dumps(limit)
+        ) if self._is_transaction else None
+
+        request = Request(
+            method='post',
+            endpoint='/_api/cursor',
+            data={'query': query, 'bindVars': bind_vars, 'count': True},
+            command=command,
+            read=self.name
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise DocumentGetError(resp)
+            return Cursor(self._conn, resp.body)
+
+        return self._execute(request, response_handler)
+
+    def find_in_radius(self, latitude, longitude, radius, distance=None):
+        """Return documents within a given radius around a coordinate.
+
+        :param latitude: Latitude.
+        :type latitude: int | float
+        :param longitude: Longitude.
+        :type longitude: int | float
+        :param radius: Max radius.
+        :type radius: int | float
+        :param distance: Document field used to indicate the distance to
+            the given coordinate. This parameter is ignored in transactions.
+        :type distance: str | unicode
+        :returns: Document cursor.
+        :rtype: arango.cursor.Cursor
+        :raises arango.exceptions.DocumentGetError: If retrieval fails.
+
+        .. note::
+            Appropriate geo index must be defined in the collection.
+        """
+        query = """
+        FOR doc IN WITHIN(@@collection, @latitude, @longitude, @radius{})
+            RETURN doc
+        """.format('' if distance is None else ', @distance')
+
+        bind_vars = {
+            '@collection': self._name,
+            'latitude': latitude,
+            'longitude': longitude,
+            'radius': radius
+        }
+        if distance is not None:
+            bind_vars['distance'] = distance
+
+        command = 'db.{}.within({},{},{}).toArray()'.format(
+            self.name,
+            dumps(latitude),
+            dumps(longitude),
+            dumps(radius)
+        ) if self._is_transaction else None
+
+        request = Request(
+            method='post',
+            endpoint='/_api/cursor',
+            data={'query': query, 'bindVars': bind_vars, 'count': True},
+            command=command,
+            read=self.name
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise DocumentGetError(resp)
+            return Cursor(self._conn, resp.body)
+
+        return self._execute(request, response_handler)
+
+    def find_in_box(self,
+                    latitude1,
+                    longitude1,
+                    latitude2,
+                    longitude2,
+                    skip=0,
+                    limit=100,
+                    index=None):
+        """Return all documents in an rectangular area.
+
+        :param latitude1: First latitude.
+        :type latitude1: int | float
+        :param longitude1: First longitude.
+        :type longitude1: int | float
+        :param latitude2: Second latitude.
+        :type latitude2: int | float
+        :param longitude2: Second longitude
+        :type longitude2: int | float
+        :param skip: Number of documents to skip.
+        :type skip: int
+        :param limit: Max number of documents fetched by the cursor. Default
+            value is 100. Values 0 or under are ignored.
+        :type limit: int
+        :param index: ID of the geo index to use (without the collection
+            prefix). This parameter is ignored in transactions.
+        :type index: str | unicode
+        :returns: Document cursor.
+        :rtype: arango.cursor.Cursor
+        :raises arango.exceptions.DocumentGetError: If retrieval fails.
+        """
+        limit = 100 if limit < 1 else limit
+
+        data = {
+            'collection': self._name,
+            'latitude1': latitude1,
+            'longitude1': longitude1,
+            'latitude2': latitude2,
+            'longitude2': longitude2,
+            'skip': skip,
+            'limit': limit
+        }
+        if index is not None:
+            data['geo'] = self._name + '/' + index
+
+        command = 'db.{}.{}({},{},{},{}).skip({}).limit({}).toArray()'.format(
+            self.name,
+            'withinRectangle',
+            dumps(latitude1),
+            dumps(longitude1),
+            dumps(latitude2),
+            dumps(longitude2),
+            dumps(skip),
+            dumps(limit)
+        ) if self._is_transaction else None
+
+        request = Request(
+            method='put',
+            endpoint='/_api/simple/within-rectangle',
+            data=data,
+            command=command,
+            read=self.name
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise DocumentGetError(resp)
+            return Cursor(self._conn, resp.body)
+
+        return self._execute(request, response_handler)
+
+    def find_by_text(self, field, query, limit=100):
+        """Return documents that match the given fulltext query.
+
+        :param field: Document field with fulltext index.
+        :type field: str | unicode
+        :param query: Fulltext query.
+        :type query: str | unicode
+        :param limit: Max number of documents fetched by the cursor. Default
+            value is 100. Values 0 or under are ignored.
+        :type limit: int
+        :returns: Document cursor
+        :rtype: arango.cursor.Cursor
+        :raises arango.exceptions.DocumentGetError: If retrieval fails.
+        """
+        aql = """
+        FOR doc IN FULLTEXT(@collection, @field, @query, @limit)
+            RETURN doc
+        """
+
+        bind_vars = {
+            'collection': self._name,
+            'field': field,
+            'query': query,
+            'limit': limit,
+        }
+
+        command = 'db.{}.fulltext({},{}).limit({}).toArray()'.format(
+            self.name,
+            dumps(field),
+            dumps(query),
+            dumps(limit)
+        ) if self._is_transaction else None
+
+        request = Request(
+            method='post',
+            endpoint='/_api/cursor',
+            data={'query': aql, 'bindVars': bind_vars, 'count': True},
+            command=command,
+            read=self.name
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise DocumentGetError(resp)
+            return Cursor(self._conn, resp.body)
+
+        return self._execute(request, response_handler)
+
+    def get_many(self, documents):
+        """Return multiple documents ignoring any missing ones.
+
+        :param documents: List of document keys, IDs or bodies. Document bodies
+            must contain the "_id" or "_key" fields.
+        :type documents: [str | unicode | dict]
+        :return: Documents. Missing ones are not included.
+        :rtype: [dict]
+        :raise arango.exceptions.DocumentGetError: If retrieval fails.
+        """
+        keys_or_ids = [
+            self._extract_id(doc) if isinstance(doc, dict) else doc
+            for doc in documents
+        ]
+
+        command = 'db.{}.document({})'.format(
+            self.name,
+            dumps(keys_or_ids)
+        ) if self._is_transaction else None
+
+        request = Request(
+            method='put',
+            endpoint='/_api/simple/lookup-by-keys',
+            data={'collection': self.name, 'keys': keys_or_ids},
+            command=command,
+            read=self.name
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise DocumentGetError(resp)
+            if self._is_transaction:
+                docs = resp.body
+            else:
+                docs = resp.body['documents']
+            return [doc for doc in docs if '_id' in doc]
 
         return self._execute(request, response_handler)
 
@@ -780,7 +1134,9 @@ class Base(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentGetError(resp)
-            return resp.body.get('document', resp.body)
+            if self._is_transaction:
+                return resp.body
+            return resp.body['document']
 
         return self._execute(request, response_handler)
 
@@ -798,16 +1154,22 @@ class Base(APIWrapper):
         request = Request(
             method='get',
             endpoint='/_api/index',
-            params={'collection': self.name}
+            params={'collection': self.name},
+            command='db.{}.getIndexes()'.format(self.name),
+            read=self.name
         )
 
         def response_handler(resp):
             if not resp.is_success:
                 raise IndexListError(resp)
+            if self._is_transaction:
+                result = resp.body
+            else:
+                result = resp.body['indexes']
 
             indexes = []
-            for index in resp.body['indexes']:
-                index['id'] = index['id'].split('/', 1)[1]
+            for index in result:
+                index['id'] = index['id'].split('/', 1)[-1]
                 if 'minLength' in index:
                     index['min_length'] = index.pop('minLength')
                 if 'geoJson' in index:
@@ -859,7 +1221,7 @@ class Base(APIWrapper):
         """Create a new hash index.
 
         :param fields: Document fields to index.
-        :type fields: [str or unicode]
+        :type fields: [str | unicode]
         :param unique: Whether the index is unique.
         :type unique: bool
         :param sparse: If set to True, documents with None in the field
@@ -889,7 +1251,7 @@ class Base(APIWrapper):
         """Create a new skiplist index.
 
         :param fields: Document fields to index.
-        :type fields: [str or unicode]
+        :type fields: [str | unicode]
         :param unique: Whether the index is unique.
         :type unique: bool
         :param sparse: If set to True, documents with None in the field
@@ -918,7 +1280,7 @@ class Base(APIWrapper):
             a single field is given, the field must have values that ar lists
             with at least two floats. Documents with missing fields or invalid
             values are excluded.
-        :type fields: str or unicode or [str or unicode]
+        :type fields: str | unicode | list
         :param ordered: Whether the order is longitude then latitude.
         :type ordered: bool
         :return: Details on the new index.
@@ -934,7 +1296,7 @@ class Base(APIWrapper):
         """Create a fulltext index.
 
         :param fields: Document fields to index.
-        :type fields: [str or unicode]
+        :type fields: [str | unicode]
         :param min_length: Minimum number of characters to index.
         :type min_length: int
         :return: Details on the new index.
@@ -950,7 +1312,7 @@ class Base(APIWrapper):
         """Create a persistent index.
 
         :param fields: Document fields to index.
-        :type fields: [str or unicode]
+        :type fields: [str | unicode]
         :param unique: Whether the index is unique.
         :type unique: bool
         :param sparse: Exclude documents that do not contain at least one of
@@ -976,10 +1338,11 @@ class Base(APIWrapper):
         """Delete an index.
 
         :param index_id: Index ID.
-        :type index_id: str or unicode
-        :param ignore_missing: Do not raise an exception on missing indexes.
+        :type index_id: str | unicode
+        :param ignore_missing: Do not raise an exception on missing index.
         :type ignore_missing: bool
-        :return: True if deleted successfully, False otherwise.
+        :return: True if deleted successfully, False if index was missing and
+            **ignore_missing** was set to True.
         :rtype: bool
         :raise arango.exceptions.IndexDeleteError: If delete fails.
         """
@@ -989,18 +1352,36 @@ class Base(APIWrapper):
         )
 
         def response_handler(resp):
-            if resp.status_code == 404 and resp.error_code == 1212:
-                if ignore_missing:
-                    return False
-                raise IndexDeleteError(resp)
+            if resp.error_code == 1212 and ignore_missing:
+                return False
             if not resp.is_success:
                 raise IndexDeleteError(resp)
-            return not resp.body['error']
+            return True
+
+        return self._execute(request, response_handler)
+
+    def load_indexes(self):
+        """Cache all indexes in this collection into memory.
+
+        :return: True if index was loaded successfully.
+        :raise arango.exceptions.IndexLoadError: If load fails.
+        """
+        request = Request(
+            method='put',
+            endpoint='/_api/collection/{}/loadIndexesIntoMemory'.format(
+                self.name
+            )
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise IndexLoadError(resp)
+            return resp.body['result']
 
         return self._execute(request, response_handler)
 
 
-class Collection(Base):
+class DefaultCollection(Collection):
     """ArangoDB collection.
 
     A collection consists of documents. It is uniquely identified by its name,
@@ -1013,87 +1394,84 @@ class Collection(Base):
     :param connection: HTTP connection.
     :type connection: arango.connection.Connection
     :param executor: API executor.
-    :type executor: arango.api.APIExecutor
+    :type executor: arango.executor.DefaultExecutor
     :param name: Collection name.
-    :type name: str or unicode
+    :type name: str | unicode
     """
 
     def __init__(self, connection, executor, name):
-        super(Collection, self).__init__(connection, executor, name)
+        super(DefaultCollection, self).__init__(connection, executor, name)
 
     def __repr__(self):
-        return '<Collection {}>'.format(self.name)
+        return '<DefaultCollection {}>'.format(self.name)
 
     def __getitem__(self, key):
         return self.get(key)
 
     def get(self, document, rev=None, check_rev=True):
-        """Retrieve a document.
+        """Return a document.
 
-        :param document: Document body, ID or key.
-        :type document: dict or str or unicode
+        :param document: Document ID, key or body. Document body must contain
+            the "_id" or "_key" field.
+        :type document: str | unicode | dict
         :param rev: Expected document revision. Overrides the value of "_rev"
-            field in **document** if present.
-        :type rev: str or unicode
-        :param check_rev: If set to True, the revision of **document** (if
-            present) is compared against the revision of the target document.
+            field in **document** if any.
+        :type rev: str | unicode
+        :param check_rev: If set to True, the revision of **document** (if any)
+            is compared against the revision of the target document.
         :type check_rev: bool
         :return: Document or None if not found.
-        :rtype: dict
+        :rtype: dict | None
         :raise arango.exceptions.DocumentGetError: If retrieval fails.
-        :raise arango.exceptions.DocumentRevisionError: If rev does not match.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
         """
-        key, _rev = self._get_key_and_rev(document)
+        handle, body, headers = self._prep_from_doc(document, rev, check_rev)
 
-        headers = {}
-        if rev is None:
-            rev = _rev
-        if rev is not None and check_rev:
-            headers['If-Match'] = rev
-
-        if self.context != 'transaction':
-            command = None
-        else:
-            document = {'_key': key}
-            if check_rev and rev is not None:
-                document['_rev'] = rev
-            command = 'db.{}.exists({})'.format(self.name, dumps(document))
+        command = 'db.{}.exists({}) || undefined'.format(
+            self.name,
+            dumps(body)
+        ) if self._is_transaction else None
 
         request = Request(
             method='get',
-            endpoint='/_api/document/{}/{}'.format(self.name, key),
+            endpoint='/_api/document/{}'.format(handle),
             headers=headers,
             command=command,
             read=self.name
         )
 
         def response_handler(resp):
-            if resp.status_code in {304, 412}:
-                raise DocumentRevisionError(resp)
-            elif resp.status_code == 404 and resp.error_code == 1202:
+            if resp.error_code == 1202:
                 return None
-            elif resp.is_success:
-                return resp.body
-            raise DocumentGetError(resp)
+            if resp.status_code == 412:
+                raise DocumentRevisionError(resp)
+            if not resp.is_success:
+                raise DocumentGetError(resp)
+            return resp.body
 
         return self._execute(request, response_handler)
 
-    def insert(self, document, return_new=False, sync=None):
+    def insert(self, document, return_new=False, sync=None, silent=False):
         """Insert a new document.
 
         :param document: Document to insert. If it contains the "_key" field,
             the value is used as the key of the new document (auto-generated
             otherwise). Any "_id" or "_rev" field is ignored.
         :type document: dict
-        :param return_new: Include body of the new document in the result.
+        :param return_new: Include body of the new document in the returned
+            metadata. Ignored if parameter **silent** is set to True.
         :type return_new: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :return: Result of the insert (e.g. document key, revision).
-        :rtype: dict
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
         :raise arango.exceptions.DocumentInsertError: If insert fails.
         """
-        params = {'returnNew': return_new}
+        params = {'returnNew': return_new, 'silent': silent}
         if sync is not None:
             params['waitForSync'] = sync
 
@@ -1101,7 +1479,7 @@ class Collection(Base):
             self.name,
             dumps(document),
             dumps(params)
-        ) if self._context == 'transaction' else None
+        ) if self._is_transaction else None
 
         request = Request(
             method='post',
@@ -1115,26 +1493,44 @@ class Collection(Base):
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentInsertError(resp)
-            return resp.body
+            return True if silent else resp.body
 
         return self._execute(request, response_handler)
 
-    def insert_many(self, documents, return_new=False, sync=None):
+    def insert_many(self,
+                    documents,
+                    return_new=False,
+                    sync=None,
+                    silent=False):
         """Insert multiple documents into the collection.
 
         :param documents: List of new documents to insert. If they contain the
             "_key" fields, the values are used as the keys of the new documents
             (auto-generated otherwise). Any "_id" or "_rev" field is ignored.
         :type documents: [dict]
-        :param return_new: Include bodies of the new documents in the result.
+        :param return_new: Include bodies of the new documents in the returned
+            metadata. Ignored if parameter **silent** is set to True
         :type return_new: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :return: Result of the insert (e.g. document keys, revisions).
-        :rtype: dict
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: List of document metadata (e.g. document keys, revisions) and
+            any exceptions, or True if parameter **silent** was set to True.
+        :rtype: [dict | ArangoError] | bool
         :raise arango.exceptions.DocumentInsertError: If insert fails.
+
+        .. note::
+            If inserting a document fails, the exception object is placed in
+            the result list instead of document metadata.
+
+        .. warning::
+            Parameters **return_new** should be used with caution, as the size
+            of returned result brought into client-side memory scales with the
+            number of documents inserted.
         """
-        params = {'returnNew': return_new}
+        params = {'returnNew': return_new, 'silent': silent}
         if sync is not None:
             params['waitForSync'] = sync
 
@@ -1142,7 +1538,7 @@ class Collection(Base):
             self.name,
             dumps(documents),
             dumps(params)
-        ) if self._context == 'transaction' else None
+        ) if self._is_transaction else None
 
         request = Request(
             method='post',
@@ -1156,6 +1552,8 @@ class Collection(Base):
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentInsertError(resp)
+            if silent is True:
+                return True
 
             results = []
             for result in resp.body:
@@ -1178,17 +1576,21 @@ class Collection(Base):
 
     def update(self,
                document,
+               check_rev=True,
                merge=True,
                keep_none=True,
                return_new=False,
                return_old=False,
-               check_rev=True,
-               sync=None):
+               sync=None,
+               silent=False):
         """Update a document.
 
         :param document: Partial or full document with the updated values. It
-            must contain the "_key" field.
+            must contain the "_id" or "_key" field.
         :type document: dict
+        :param check_rev: If set to True, the "_rev" field in **document** (if
+            present) is compared against the revision of the target document.
+        :type check_rev: bool
         :param merge: If set to True, sub-dictionaries are merged instead of
             the new one overwriting the old one.
         :type merge: bool
@@ -1199,15 +1601,16 @@ class Collection(Base):
         :type return_new: bool
         :param return_old: Include body of the old document in the result.
         :type return_old: bool
-        :param check_rev: If set to True, the "_rev" field in **document** (if
-            present) is compared against the revision of the target document.
-        :type check_rev: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :return: Result of the update (e.g. document key, revision).
-        :rtype: dict
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
         :raise arango.exceptions.DocumentUpdateError: If update fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
         """
         params = {
             'keepNull': keep_none,
@@ -1215,26 +1618,22 @@ class Collection(Base):
             'returnNew': return_new,
             'returnOld': return_old,
             'ignoreRevs': not check_rev,
-            'overwrite': not check_rev
+            'overwrite': not check_rev,
+            'silent': silent
         }
         if sync is not None:
             params['waitForSync'] = sync
 
-        if self.context != 'transaction':
-            command = None
-        else:
-            raw_string = dumps(document)
-            command = 'db.{}.update({},{},{})'.format(
-                self.name,
-                raw_string,
-                raw_string,
-                dumps(params)
-            )
+        command = 'db.{col}.update({doc},{doc},{opts})'.format(
+            col=self.name,
+            doc=dumps(document),
+            opts=dumps(params)
+        ) if self._is_transaction else None
 
         request = Request(
             method='patch',
-            endpoint='/_api/document/{}/{}'.format(
-                self.name, document['_key']
+            endpoint='/_api/document/{}'.format(
+                self._extract_id(document)
             ),
             data=document,
             params=params,
@@ -1247,6 +1646,8 @@ class Collection(Base):
                 raise DocumentRevisionError(resp)
             elif not resp.is_success:
                 raise DocumentUpdateError(resp)
+            if silent is True:
+                return True
             resp.body['_old_rev'] = resp.body.pop('_oldRev')
             return resp.body
 
@@ -1254,17 +1655,21 @@ class Collection(Base):
 
     def update_many(self,
                     documents,
+                    check_rev=True,
                     merge=True,
                     keep_none=True,
                     return_new=False,
                     return_old=False,
-                    check_rev=True,
-                    sync=None):
+                    sync=None,
+                    silent=False):
         """Update multiple documents.
 
         :param documents: Partial or full documents with the updated values.
-            They must contain the "_key" fields.
+            They must contain the "_id" or "_key" fields.
         :type documents: [dict]
+        :param check_rev: If set to True, the "_rev" fields in **documents**
+            (if any) are compared against the revisions of target documents.
+        :type check_rev: bool
         :param merge: If set to True, sub-dictionaries are merged instead of
             the new ones overwriting the old ones.
         :type merge: bool
@@ -1275,19 +1680,24 @@ class Collection(Base):
         :type return_new: bool
         :param return_old: Include bodies of the old documents in the result.
         :type return_old: bool
-        :param check_rev: If set to True, the "_rev" fields in **documents**
-            (if present) are compared against the revisions of the target
-            documents.
-        :type check_rev: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :return: Result of the update (e.g. document keys, revisions).
-        :rtype: dict
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: List of document metadata (e.g. document keys, revisions) and
+            any exceptions, or True if parameter **silent** was set to True.
+        :rtype: [dict | ArangoError] | bool
         :raise arango.exceptions.DocumentUpdateError: If update fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
+
+        .. note::
+            If updating a document fails, the exception object is placed in
+            the result list instead of document metadata.
 
         .. warning::
-            The size of returned result may be large depending on the input.
+            Parameters **return_new** and **return_old** should be used with
+            caution, as the size of returned result brought into client-side
+            memory scales with the number of documents updated.
         """
         params = {
             'keepNull': keep_none,
@@ -1295,21 +1705,18 @@ class Collection(Base):
             'returnNew': return_new,
             'returnOld': return_old,
             'ignoreRevs': not check_rev,
-            'overwrite': not check_rev
+            'overwrite': not check_rev,
+            'silent': silent
         }
         if sync is not None:
             params['waitForSync'] = sync
 
-        if self.context != 'transaction':
-            command = None
-        else:
-            raw_string = dumps(documents)
-            command = 'db.{}.update({},{},{})'.format(
-                self.name,
-                raw_string,
-                raw_string,
-                dumps(params)
-            )
+        documents = [self._put_key_in_body(doc) for doc in documents]
+        command = 'db.{col}.update({docs},{docs},{opts})'.format(
+            col=self.name,
+            docs=dumps(documents),
+            opts=dumps(params)
+        ) if self._is_transaction else None
 
         request = Request(
             method='patch',
@@ -1323,11 +1730,12 @@ class Collection(Base):
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentUpdateError(resp)
+            if silent is True:
+                return True
 
             results = []
             for result in resp.body:
                 if '_id' not in result:
-                    # An error occurred with this particular document
                     sub_resp = Response(
                         method='patch',
                         url=resp.url,
@@ -1336,7 +1744,6 @@ class Collection(Base):
                         status_text=resp.status_text,
                         raw_body=result,
                     )
-                    # Single out revision error
                     if result['errorNum'] == 1200:
                         result = DocumentRevisionError(sub_resp)
                     else:
@@ -1360,10 +1767,10 @@ class Collection(Base):
 
         :param filters: Document filters.
         :type filters: dict
-        :param body: Document body with the updates.
+        :param body: Full or partial document body with the updates.
         :type body: dict
-        :param limit: Maximum number of documents to update. If the limit is
-            lower than the number of matched documents, random documents are
+        :param limit: Max number of documents to update. If the limit is lower
+            than the number of matched documents, random documents are
             chosen. This parameter is not supported on sharded collections.
         :type limit: int
         :param keep_none: If set to True, fields with value None are retained
@@ -1371,11 +1778,11 @@ class Collection(Base):
         :type keep_none: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :return: Number of documents updated.
-        :rtype: int
         :param merge: If set to True, sub-dictionaries are merged instead of
             the new ones overwriting the old ones.
         :type merge: bool
+        :return: Number of documents updated.
+        :rtype: int
         :raise arango.exceptions.DocumentUpdateError: If update fails.
         """
         data = {
@@ -1395,7 +1802,7 @@ class Collection(Base):
             dumps(filters),
             dumps(body),
             dumps(data)
-        ) if self.context == 'transaction' else None
+        ) if self._is_transaction else None
 
         request = Request(
             method='put',
@@ -1408,62 +1815,63 @@ class Collection(Base):
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentUpdateError(resp)
-            if is_dict(resp.body):
-                return resp.body['updated']
-            return resp.body
+            if self._is_transaction:
+                return resp.body
+            return resp.body['updated']
 
         return self._execute(request, response_handler)
 
     def replace(self,
                 document,
+                check_rev=True,
                 return_new=False,
                 return_old=False,
-                check_rev=True,
-                sync=None):
+                sync=None,
+                silent=False):
         """Replace a document.
 
         :param document: New document to replace the old one with. It must
-            contain the "_key" field. Edge document must also contain "_from"
-            and "_to" fields.
+            contain the "_id" or "_key" field. Edge document must also have
+            "_from" and "_to" fields.
         :type document: dict
+        :param check_rev: If set to True, the "_rev" field in **document**
+            is compared against the revision of the target document.
+        :type check_rev: bool
         :param return_new: Include body of the new document in the result.
         :type return_new: bool
         :param return_old: Include body of the old document in the result.
         :type return_old: bool
-        :param check_rev: If set to True, the "_rev" field in **document**
-            is compared against the revision of the target document.
-        :type check_rev: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :return: Result of the replace (e.g. document key, revision).
-        :rtype: dict
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
         :raise arango.exceptions.DocumentReplaceError: If replace fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
         """
         params = {
             'returnNew': return_new,
             'returnOld': return_old,
             'ignoreRevs': not check_rev,
             'overwrite': not check_rev,
+            'silent': silent
         }
         if sync is not None:
             params['waitForSync'] = sync
 
-        if self.context != 'transaction':
-            command = None
-        else:
-            raw_string = dumps(document)
-            command = 'db.{}.replace({},{},{})'.format(
-                self.name,
-                raw_string,
-                raw_string,
-                dumps(params)
-            )
+        command = 'db.{col}.replace({doc},{doc},{opts})'.format(
+            col=self.name,
+            doc=dumps(document),
+            opts=dumps(params)
+        ) if self._is_transaction else None
 
         request = Request(
             method='put',
-            endpoint='/_api/document/{}/{}'.format(
-                self.name, document['_key']
+            endpoint='/_api/document/{}'.format(
+                self._extract_id(document)
             ),
             params=params,
             data=document,
@@ -1476,6 +1884,8 @@ class Collection(Base):
                 raise DocumentRevisionError(resp)
             if not resp.is_success:
                 raise DocumentReplaceError(resp)
+            if silent is True:
+                return True
             resp.body['_old_rev'] = resp.body.pop('_oldRev')
             return resp.body
 
@@ -1483,51 +1893,59 @@ class Collection(Base):
 
     def replace_many(self,
                      documents,
+                     check_rev=True,
                      return_new=False,
                      return_old=False,
-                     check_rev=True,
-                     sync=None):
+                     sync=None,
+                     silent=False):
         """Replace multiple documents.
 
         :param documents: New documents to replace the old ones with. They must
-            contain the "_key" fields. Edge documents must also contain "_from"
-            and "_to" fields.
+            contain the "_id" or "_key" fields. Edge documents must also have
+             "_from" and "_to" fields.
         :type documents: [dict]
+        :param check_rev: If set to True, the "_rev" fields in **documents**
+            (if any) are compared against the revisions of target documents.
+        :type check_rev: bool
         :param return_new: Include bodies of the new documents in the result.
         :type return_new: bool
         :param return_old: Include bodies of the old documents in the result.
         :type return_old: bool
-        :param check_rev: If set to True, the "_rev" fields in **documents**
-            are compared against the revisions of the target documents.
-        :type check_rev: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :return: Result of the replace (e.g. document keys, revisions).
-        :rtype: dict
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: List of document metadata (e.g. document keys, revisions) and
+            any exceptions, or True if parameter **silent** was set to True.
+        :rtype: [dict | ArangoError] | bool
         :raise arango.exceptions.DocumentReplaceError: If replace fails.
 
+        .. note::
+            If replacing a document fails, the exception object is placed in
+            the result list instead of document metadata.
+
         .. warning::
-            The size of returned result may be large depending on the input.
+            Parameters **return_new** and **return_old** should be used with
+            caution, as the size of returned result brought into client-side
+            memory scales with the number of documents replaced.
         """
         params = {
             'returnNew': return_new,
             'returnOld': return_old,
             'ignoreRevs': not check_rev,
-            'overwrite': not check_rev
+            'overwrite': not check_rev,
+            'silent': silent
         }
         if sync is not None:
             params['waitForSync'] = sync
 
-        if self.context != 'transaction':
-            command = None
-        else:
-            raw_string = dumps(documents)
-            command = 'db.{}.replace({},{},{})'.format(
-                self.name,
-                raw_string,
-                raw_string,
-                dumps(params)
-            )
+        documents = [self._put_key_in_body(doc) for doc in documents]
+        command = 'db.{col}.replace({docs},{docs},{opts})'.format(
+            col=self.name,
+            docs=dumps(documents),
+            opts=dumps(params)
+        ) if self._is_transaction else None
 
         request = Request(
             method='put',
@@ -1541,11 +1959,12 @@ class Collection(Base):
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentReplaceError(resp)
+            if silent is True:
+                return True
 
             results = []
             for result in resp.body:
                 if '_id' not in result:
-                    # An error occurred with this particular document
                     sub_resp = Response(
                         method=resp.method,
                         url=resp.url,
@@ -1554,7 +1973,6 @@ class Collection(Base):
                         status_text=resp.status_text,
                         raw_body=result
                     )
-                    # Single out revision error
                     if result['errorNum'] == 1200:
                         result = DocumentRevisionError(sub_resp)
                     else:
@@ -1574,9 +1992,8 @@ class Collection(Base):
         :type filters: dict
         :param body: New document body.
         :type body: dict
-        :param limit: Maximum number of documents to replace. If the limit
-            is lower than the number of matched documents, random documents
-            are chosen.
+        :param limit: Max number of documents to replace. If the limit is lower
+            than the number of matched documents, random documents are chosen.
         :type limit: int
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
@@ -1599,7 +2016,7 @@ class Collection(Base):
             dumps(filters),
             dumps(body),
             dumps(data)
-        ) if self.context == 'transaction' else None
+        ) if self._is_transaction else None
 
         request = Request(
             method='put',
@@ -1612,60 +2029,70 @@ class Collection(Base):
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentReplaceError(resp)
-            if is_dict(resp.body):
-                return resp.body['replaced']
-            return resp.body
+            if self._is_transaction:
+                return resp.body
+            return resp.body['replaced']
 
         return self._execute(request, response_handler)
 
     def delete(self,
                document,
+               rev=None,
+               check_rev=True,
                ignore_missing=False,
                return_old=False,
-               check_rev=True,
-               sync=None):
+               sync=None,
+               silent=False):
         """Delete a document.
 
-        :param document: Document body, ID or key.
-        :type document: dict or str or unicode
+        :param document: Document ID, key or body. Document body must contain
+            the "_id" or "_key" field.
+        :type document: str | unicode | dict
+        :param rev: Expected document revision. Overrides the value of "_rev"
+            field in **document** if any.
+        :type rev: str | unicode
+        :param check_rev: If set to True, the revision of **document** (if any)
+            is compared against the revision of the target document.
+        :type check_rev: bool
         :param ignore_missing: Do not raise an exception on missing document.
+            This parameter has no effect in transactions where an exception is
+            always raised.
         :type ignore_missing: bool
         :param return_old: Include body of the old document in the result.
         :type return_old: bool
-        :param check_rev: If set to True, the "_rev" field in **document** (if
-            any) is compared against the revision of the target document.
-        :type check_rev: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :return: Results of the delete (e.g. document key, new revision),
-            or False if the document was missing but ignored.
-        :rtype: dict or bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision), or True if
+            parameter **silent** was set to True, or False if document is
+            missing and **ignore_missing** was set to True (does not apply
+            in transactions).
+        :rtype: bool | dict
         :raise arango.exceptions.DocumentDeleteError: If delete fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
         """
-        key, rev = self._get_key_and_rev(document)
+        handle, body, headers = self._prep_from_doc(document, rev, check_rev)
 
         params = {
             'returnOld': return_old,
             'ignoreRevs': not check_rev,
             'overwrite': not check_rev,
+            'silent': silent
         }
         if sync is not None:
             params['waitForSync'] = sync
 
-        headers = {}
-        if check_rev and rev is not None:
-            headers['If-Match'] = rev
-
         command = 'db.{}.remove({},{})'.format(
             self.name,
-            dumps({'_key': key, '_rev': rev}),
+            dumps(body),
             dumps(params)
-        ) if self.context == 'transaction' else None
+        ) if self._is_transaction else None
 
         request = Request(
             method='delete',
-            endpoint='/_api/document/{}/{}'.format(self.name, key),
+            endpoint='/_api/document/{}'.format(handle),
             params=params,
             headers=headers,
             command=command,
@@ -1673,15 +2100,13 @@ class Collection(Base):
         )
 
         def response_handler(resp):
+            if resp.error_code == 1202 and ignore_missing:
+                return False
             if resp.status_code == 412:
                 raise DocumentRevisionError(resp)
-            elif resp.status_code == 404:
-                if ignore_missing:
-                    return False
+            if not resp.is_success:
                 raise DocumentDeleteError(resp)
-            elif not resp.is_success:
-                raise DocumentDeleteError(resp)
-            return resp.body
+            return True if silent else resp.body
 
         return self._execute(request, response_handler)
 
@@ -1689,12 +2114,13 @@ class Collection(Base):
                     documents,
                     return_old=False,
                     check_rev=True,
-                    sync=None):
+                    sync=None,
+                    silent=False):
         """Delete multiple documents.
 
-        :param documents: Document bodies or keys to delete. They must contain
-            the "_key" fields.
-        :type documents: [dict] or [str or unicode]
+        :param documents: Document IDs, keys or bodies. Document bodies must
+            contain the "_id" or "_key" fields.
+        :type documents: [str | unicode | dict]
         :param return_old: Include bodies of the old documents in the result.
         :type return_old: bool
         :param check_rev: If set to True, the "_rev" fields in **documents**
@@ -1702,37 +2128,47 @@ class Collection(Base):
         :type check_rev: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :return: Result of the delete (e.g. document keys, revisions).
-        :rtype: dict
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: List of document metadata (e.g. document keys, revisions) and
+            any exceptions, or True if parameter **silent** was set to True.
+        :rtype: [dict | ArangoError] | bool
         :raise arango.exceptions.DocumentDeleteError: If delete fails.
 
-        .. warning::
-            The size of returned result may be large depending on the input.
-        """
-        normalized_documents = []
-        for doc in documents:
-            key, rev = self._get_key_and_rev(doc)
-            normalized_documents.append({'_key': key, '_rev': rev})
+        .. note::
+            If deletion of a document fails, the exception object is placed in
+            the result list instead of document metadata.
 
+        .. warning::
+            Parameters **return_old** should be used with caution, as the size
+            of returned metadata (brought into client-side memory) scales with
+            the number of documents deleted.
+        """
         params = {
             'returnOld': return_old,
             'ignoreRevs': not check_rev,
-            'overwrite': not check_rev
+            'overwrite': not check_rev,
+            'silent': silent
         }
         if sync is not None:
             params['waitForSync'] = sync
 
+        documents = [
+            self._put_key_in_body(doc) if isinstance(doc, dict) else doc
+            for doc in documents
+        ]
         command = 'db.{}.remove({},{})'.format(
             self.name,
-            dumps(normalized_documents),
+            dumps(documents),
             dumps(params)
-        ) if self.context == 'transaction' else None
+        ) if self._is_transaction else None
 
         request = Request(
             method='delete',
             endpoint='/_api/document/{}'.format(self.name),
             params=params,
-            data=normalized_documents,
+            data=documents,
             command=command,
             write=self.name
         )
@@ -1740,11 +2176,12 @@ class Collection(Base):
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentDeleteError(resp)
+            if silent is True:
+                return True
 
             results = []
             for result in resp.body:
                 if '_id' not in result:
-                    # An error occurred with this particular document
                     sub_resp = Response(
                         method=resp.method,
                         url=resp.url,
@@ -1753,7 +2190,6 @@ class Collection(Base):
                         status_text=resp.status_text,
                         raw_body=result
                     )
-                    # Single out revision errors
                     if result['errorNum'] == 1200:
                         result = DocumentRevisionError(sub_resp)
                     else:
@@ -1769,9 +2205,8 @@ class Collection(Base):
 
         :param filters: Document filters.
         :type filters: dict
-        :param limit: Maximum number of documents to delete. If the limit
-            is lower than the number of matched documents, random documents
-            are chosen.
+        :param limit: Max number of documents to delete. If the limit is lower
+            than the number of matched documents, random documents are chosen.
         :type limit: int
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
@@ -1782,14 +2217,14 @@ class Collection(Base):
         data = {'collection': self.name, 'example': filters}
         if sync is not None:
             data['waitForSync'] = sync
-        if limit is not None:
+        if limit is not None and limit != 0:
             data['limit'] = limit
 
-        command = 'db.{}.removeByExample({}, {})'.format(
+        command = 'db.{}.removeByExample({},{})'.format(
             self.name,
             dumps(filters),
             dumps(data)
-        ) if self.context == 'transaction' else None
+        ) if self._is_transaction else None
 
         request = Request(
             method='put',
@@ -1802,9 +2237,9 @@ class Collection(Base):
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentDeleteError(resp)
-            if is_dict(resp.body):
-                return resp.body['deleted']
-            return resp.body
+            if self._is_transaction:
+                return resp.body
+            return resp.body['deleted']
 
         return self._execute(request, response_handler)
 
@@ -1834,12 +2269,12 @@ class Collection(Base):
             field in each edge document inserted. For example, prefix "foo"
             prepended to "_from": "bar" will result in "_from": "foo/bar".
             This parameter only applies to edge collections.
-        :type from_prefix: str or unicode
+        :type from_prefix: str | unicode
         :param to_prefix: String prefix prepended to the value of "_to" field
             in edge document inserted. For example, prefix "foo" prepended to
             "_to": "bar" will result in "_to": "foo/bar". This parameter only
             applies to edge collections.
-        :type to_prefix: str or unicode
+        :type to_prefix: str | unicode
         :param overwrite: If set to True, all existing documents in the
             collection are removed prior to the import. Indexes are still
             preserved.
@@ -1863,7 +2298,7 @@ class Collection(Base):
                 "ignore"  : Do not import the new documents and count them as
                             ignored, as opposed to counting them as errors.
 
-        :type on_duplicate: str or unicode
+        :type on_duplicate: str | unicode
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
         :return: Result of the bulk import.
@@ -1906,305 +2341,7 @@ class Collection(Base):
         return self._execute(request, response_handler)
 
 
-class EdgeCollection(Base):
-    """ArangoDB edge collection.
-
-    An edge collection consists of edge documents. It is uniquely identified
-    by its name which must consist only of alphanumeric characters, hyphen and
-    and underscore. Edge collections share their namespace with other types of
-    collections.
-
-    Documents in an edge collection are fully accessible from a standard
-    collection. Managing documents through an edge collection, however, adds
-    additional guarantees: all modifications are executed in transactions and
-    edge documents are checked against the edge definitions on insert.
-
-    :param connection: HTTP connection.
-    :type connection: arango.connection.Connection
-    :param executor: API executor.
-    :type executor: arango.api.APIExecutor
-    :param graph: Graph name.
-    :type graph: str or unicode
-    :param name: Edge collection name.
-    :type name: str or unicode
-    """
-
-    def __init__(self, connection, executor, graph, name):
-        super(EdgeCollection, self).__init__(connection, executor, name)
-        self._graph = graph
-
-    def __repr__(self):
-        return '<EdgeCollection {}>'.format(self.name)
-
-    def __getitem__(self, key):
-        return self.get(key)
-
-    @property
-    def graph(self):
-        """Return the graph name.
-
-        :return: Graph name.
-        :rtype: str or unicode
-        """
-        return self._graph
-
-    def get(self, edge, rev=None, check_rev=True):
-        """Retrieve an edge document.
-
-        :param edge: New document body, ID or key.
-        :type edge: dict or str or unicode
-        :param rev: Expected document revision. Overrides the value of "_rev"
-            field in **edge** if present.
-        :type rev: str or unicode
-        :param check_rev: If set to True, the revision of **edge** (if present)
-            is compared against the revision of the target edge document.
-        :type check_rev: bool
-        :return: Edge document or None if not found.
-        :rtype: dict
-        :raise arango.exceptions.DocumentGetError: If retrieval fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
-        """
-        key, _rev = self._get_key_and_rev(edge)
-
-        headers = {}
-        if rev is None:
-            rev = _rev
-        if rev is not None and check_rev:
-            headers['If-Match'] = rev
-
-        request = Request(
-            method='get',
-            endpoint='/_api/gharial/{}/edge/{}/{}'.format(
-                self._graph, self.name, key
-            ),
-            headers=headers
-        )
-
-        def response_handler(resp):
-            if resp.status_code == 412:
-                raise DocumentRevisionError(resp)
-            elif resp.status_code == 404 and resp.error_code == 1202:
-                return None
-            elif not resp.is_success:
-                raise DocumentGetError(resp)
-            return resp.body['edge']
-
-        return self._execute(request, response_handler)
-
-    def insert(self, edge, sync=None):
-        """Insert a new edge document.
-
-        :param edge: Edge document to insert. If it contains the "_key" field,
-            the value is used as the key of the new edge document (otherwise it
-            is auto-generated). Any "_id" or "_rev" field is ignored.
-        :type edge: dict
-        :param sync: Block until the operation is synchronized to disk.
-        :type sync: bool
-        :return: ID, revision and key of the new document.
-        :rtype: dict
-        :raise arango.exceptions.DocumentInsertError: If insert fails.
-        """
-        params = {}
-        if sync is not None:
-            params['waitForSync'] = sync
-
-        request = Request(
-            method='post',
-            endpoint='/_api/gharial/{}/edge/{}'.format(
-                self._graph, self.name
-            ),
-            data=edge,
-            params=params,
-
-        )
-
-        def response_handler(resp):
-            if not resp.is_success:
-                raise DocumentInsertError(resp)
-            return resp.body['edge']
-
-        return self._execute(request, response_handler)
-
-    def update(self, edge, keep_none=True, sync=None, check_rev=True):
-        """Update an edge document.
-
-        :param edge: Partial or full edge document with the updated values. It
-            must contain the "_key" field.
-        :type edge: dict
-        :param keep_none: If set to True, fields with value None are retained
-            in the document, otherwise they are removed completely.
-        :type keep_none: bool
-        :param sync: Block until the operation is synchronized to disk.
-        :type sync: bool
-        :param check_rev: If set to True, the "_rev" field in **edge** is
-            compared against the revision of the target document.
-        :type check_rev: bool
-        :return: ID, revision and key of the updated document.
-        :rtype: dict
-        :raise arango.exceptions.DocumentUpdateError: If update fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
-        """
-        params = {'keepNull': keep_none}
-        if sync is not None:
-            params['waitForSync'] = sync
-
-        headers = {}
-        rev = edge.get('_rev')
-        if check_rev and rev is not None:
-            headers['If-Match'] = rev
-
-        request = Request(
-            method='patch',
-            endpoint='/_api/gharial/{}/edge/{}/{}'.format(
-                self._graph, self.name, edge['_key']
-            ),
-            data=edge,
-            params=params,
-            headers=headers
-        )
-
-        def response_handler(resp):
-            if resp.status_code == 412:
-                raise DocumentRevisionError(resp)
-            elif not resp.is_success:
-                raise DocumentUpdateError(resp)
-            result = resp.body['edge']
-            result['_old_rev'] = result.pop('_oldRev')
-            return result
-
-        return self._execute(request, response_handler)
-
-    def replace(self, edge, sync=None, check_rev=True):
-        """Replace an edge document.
-
-        :param edge: New edge document to replace the old one with. It must
-            contain the "_key" field.
-        :type edge: dict
-        :param sync: Block until the operation is synchronized to disk.
-        :type sync: bool
-        :param check_rev: If set to True, the "_rev" field in **edge** is
-            compared against the revision of the target document.
-        :type check_rev: bool
-        :return: ID, revision and key of the replaced document.
-        :rtype: dict
-        :raise arango.exceptions.DocumentReplaceError: If replace fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
-        """
-        params = {}
-        if sync is not None:
-            params['waitForSync'] = sync
-
-        headers = {}
-        rev = edge.get('_rev')
-        if check_rev and rev is not None:
-            headers['If-Match'] = rev
-
-        request = Request(
-            method='put',
-            endpoint='/_api/gharial/{}/edge/{}/{}'.format(
-                self._graph, self.name, edge['_key']
-            ),
-            data=edge,
-            params=params,
-            headers=headers
-        )
-
-        def response_handler(resp):
-            if resp.status_code == 412:
-                raise DocumentRevisionError(resp)
-            elif not resp.is_success:
-                raise DocumentReplaceError(resp)
-            result = resp.body['edge']
-            result['_old_rev'] = result.pop('_oldRev')
-            return result
-
-        return self._execute(request, response_handler)
-
-    def delete(self, edge, ignore_missing=False, sync=None, check_rev=True):
-        """Delete an edge document.
-
-        :param edge: Edge document body, ID or key.
-        :type edge: dict or str or unicode
-        :param ignore_missing: Do not raise an exception on missing document.
-        :type ignore_missing: bool
-        :param sync: Block until the operation is synchronized to disk.
-        :type sync: bool
-        :param check_rev: If set to True, the "_rev" field in **edge** (if any)
-            is compared against the revision of the target document.
-        :type check_rev: bool
-        :return: True if document was deleted successfully, False otherwise.
-        :rtype: bool
-        :raise arango.exceptions.DocumentDeleteError: If delete fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
-        """
-        key, rev = self._get_key_and_rev(edge)
-
-        params = {}
-        if sync is not None:
-            params['waitForSync'] = sync
-
-        headers = {}
-        if check_rev and rev is not None:
-            headers['If-Match'] = rev
-
-        request = Request(
-            method='delete',
-            endpoint='/_api/gharial/{}/edge/{}/{}'.format(
-                self._graph, self.name, key
-            ),
-            params=params,
-            headers=headers
-        )
-
-        def response_handler(resp):
-            if resp.status_code == 412:
-                raise DocumentRevisionError(resp)
-            elif resp.status_code == 404 and resp.error_code == 1202:
-                if ignore_missing:
-                    return False
-                raise DocumentDeleteError(resp)
-            elif not resp.is_success:
-                raise DocumentDeleteError(resp)
-            return resp.body['removed']
-
-        return self._execute(request, response_handler)
-
-    # TODO ArangoDB 3.3.4 is throwing 501 ILLEGAL /_api/edges' not implemented
-    # def edges(self, vertex, direction=None):
-    #     """Return the edge documents coming in and out of the vertex.
-    #
-    #     :param vertex: Start vertex document body or ID.
-    #     :type vertex: dict or str or unicode
-    #     :param direction: The direction of the edges. Allowed values are "in"
-    #         and "out". If not set, edges in both directions are returned.
-    #     :type direction: str or unicode or None
-    #     :return: List of edges and statistics.
-    #     :rtype: dict
-    #     :raise arango.exceptions.EdgeListError: If retrieval fails.
-    #     """
-    #     params = {}
-    #     if direction is not None:
-    #         params['direction'] = direction
-    #     if isinstance(vertex, dict):
-    #         params['vertex'] = vertex['_id']
-    #     else:
-    #         params['vertex'] = vertex
-    #
-    #     request = Request(
-    #         method='delete',
-    #         endpoint='/_api/edges/{}'.format(self.name),
-    #         params=params
-    #     )
-    #
-    #     def response_handler(resp):
-    #         if not resp.is_success:
-    #             raise EdgeListError(resp)
-    #         return resp.body
-    #
-    #     return self._execute(request, response_handler)
-
-
-class VertexCollection(Base):
+class VertexCollection(Collection):
     """ArangoDB vertex collection.
 
     A vertex collection consists of vertex documents. It is uniquely identified
@@ -2220,11 +2357,11 @@ class VertexCollection(Base):
     :param connection: HTTP connection.
     :type connection: arango.connection.Connection
     :param executor: API executor.
-    :type executor: arango.api.APIExecutor
+    :type executor: arango.executor.DefaultExecutor
     :param graph: Graph name.
-    :type graph: str or unicode
+    :type graph: str | unicode
     :param name: Vertex collection name.
-    :type name: str or unicode
+    :type name: str | unicode
     """
 
     def __init__(self, connection, executor, graph, name):
@@ -2242,69 +2379,85 @@ class VertexCollection(Base):
         """Return the graph name.
 
         :return: Graph name.
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return self._graph
 
     def get(self, vertex, rev=None, check_rev=True):
-        """Retrieve a vertex document.
+        """Return a vertex document.
 
-        :param vertex: Vertex document body, ID or key.
-        :type vertex: dict or str or unicode
+        :param vertex: Vertex document ID, key or body. Document body must
+            contain the "_id" or "_key" field.
+        :type vertex: str | unicode | dict
         :param rev: Expected document revision. Overrides the value of "_rev"
-            field in **vertex** if present.
-        :type rev: str or unicode
-        :param check_rev: If set to True, the revision of **vertex** (if
-            present) is compared against the revision of the target vertex.
+            field in **vertex** if any.
+        :type rev: str | unicode
+        :param check_rev: If set to True, the revision of **vertex** (if any)
+            is compared against the revision of the target vertex document.
         :type check_rev: bool
         :return: Vertex document or None if not found.
-        :rtype: dict
+        :rtype: dict | None
         :raise arango.exceptions.DocumentGetError: If retrieval fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
         """
-        key, _rev = self._get_key_and_rev(vertex)
+        handle, body, headers = self._prep_from_doc(vertex, rev, check_rev)
 
-        headers = {}
-        if rev is None:
-            rev = _rev
-        if rev is not None and check_rev:
-            headers['If-Match'] = rev
+        command = 'gm._graph("{}").{}.document({})'.format(
+            self.graph,
+            self.name,
+            dumps(body)
+        ) if self._is_transaction else None
 
         request = Request(
             method='get',
-            endpoint='/_api/gharial/{}/vertex/{}/{}'.format(
-                self._graph, self.name, key
+            endpoint='/_api/gharial/{}/vertex/{}'.format(
+                self._graph, handle
             ),
-            headers=headers
+            headers=headers,
+            command=command,
+            read=self.name
         )
 
         def response_handler(resp):
+            if resp.error_code == 1202:
+                return None
             if resp.status_code == 412:
                 raise DocumentRevisionError(resp)
-            elif resp.status_code == 404 and resp.error_code == 1202:
-                return None
-            elif not resp.is_success:
+            if not resp.is_success:
                 raise DocumentGetError(resp)
+            if self._is_transaction:
+                return resp.body
             return resp.body['vertex']
 
         return self._execute(request, response_handler)
 
-    def insert(self, vertex, sync=None):
+    def insert(self, vertex, sync=None, silent=False):
         """Insert a new vertex document.
 
-        :param vertex: Vertex document to insert. If it contains the "_key"
-            field, the value is used as the key of the new vertex document
-            (auto-generated otherwise). Any "_id" or "_rev" field is ignored.
+        :param vertex: New vertex document to insert. If it has "_key" field,
+            its value is used as the key of the new vertex document (otherwise
+            it is auto-generated). Any "_id" or "_rev" field is ignored.
         :type vertex: dict
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :return: ID, revision and key of the new document.
-        :rtype: dict
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
         :raise arango.exceptions.DocumentInsertError: If insert fails.
         """
-        params = {}
+        params = {'silent': silent}
         if sync is not None:
             params['waitForSync'] = sync
+
+        command = 'gm._graph("{}").{}.save({},{})'.format(
+            self.graph,
+            self.name,
+            dumps(vertex),
+            dumps(params)
+        ) if self._is_transaction else None
 
         request = Request(
             method='post',
@@ -2312,52 +2465,78 @@ class VertexCollection(Base):
                 self._graph, self.name
             ),
             data=vertex,
-            params=params
+            params=params,
+            command=command,
+            write=self.name
         )
 
         def response_handler(resp):
             if not resp.is_success:
                 raise DocumentInsertError(resp)
+            if silent is True:
+                return True
+            if self._is_transaction:
+                return resp.body
             return resp.body['vertex']
 
         return self._execute(request, response_handler)
 
-    def update(self, vertex, keep_none=True, sync=None, check_rev=True):
+    def update(self,
+               vertex,
+               check_rev=True,
+               keep_none=True,
+               sync=None,
+               silent=False):
         """Update a vertex document.
 
         :param vertex: Partial or full vertex document with updated values. It
-            must contain the "_key" field.
+            must contain the "_key" or "_id" field.
         :type vertex: dict
+        :param check_rev: If set to True, the "_rev" field in **vertex** (if
+            any) is compared against the revision of the target document.
+        :type check_rev: bool
         :param keep_none: If set to True, fields with value None are retained
-            in the document, otherwise they are removed completely.
+            in the document. If set to False, they are removed completely.
         :type keep_none: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :param check_rev: If set to True, the "_rev" field in **vertex** (if
-            present) is compared against the revision of the target document.
-        :type check_rev: bool
-        :return: ID, revision and key of the updated document.
-        :rtype: dict
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
         :raise arango.exceptions.DocumentUpdateError: If update fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
         """
-        params = {'keepNull': keep_none}
+        vertex_id, headers = self._prep_from_body(vertex, check_rev)
+
+        params = {
+            'keepNull': keep_none,
+            'overwrite': not check_rev,
+            'silent': silent
+        }
         if sync is not None:
             params['waitForSync'] = sync
 
-        headers = {}
-        rev = vertex.get('_rev')
-        if check_rev and rev is not None:
-            headers['If-Match'] = rev
+        command = 'gm._graph("{}").{}.update("{}",{},{})'.format(
+            self.graph,
+            self.name,
+            vertex_id,
+            dumps(vertex),
+            dumps(params)
+        ) if self._is_transaction else None
 
         request = Request(
             method='patch',
-            endpoint='/_api/gharial/{}/vertex/{}/{}'.format(
-                self._graph, self.name, vertex['_key']
+            endpoint='/_api/gharial/{}/vertex/{}'.format(
+                self._graph, vertex_id
             ),
-            data=vertex,
+            headers=headers,
             params=params,
-            headers=headers
+            data=vertex,
+            command=command,
+            write=self.name
         )
 
         def response_handler(resp):
@@ -2365,45 +2544,61 @@ class VertexCollection(Base):
                 raise DocumentRevisionError(resp)
             elif not resp.is_success:
                 raise DocumentUpdateError(resp)
-            result = resp.body['vertex']
+            if silent is True:
+                return True
+            if self._is_transaction:
+                result = resp.body
+            else:
+                result = resp.body['vertex']
             result['_old_rev'] = result.pop('_oldRev')
             return result
 
         return self._execute(request, response_handler)
 
-    def replace(self, vertex, sync=None, check_rev=True):
+    def replace(self, vertex, check_rev=True, sync=None, silent=False):
         """Replace a vertex document.
 
         :param vertex: New vertex document to replace the old one with. It must
-            contain the "_key" field.
+            contain the "_key" or "_id" field.
         :type vertex: dict
+        :param check_rev: If set to True, the "_rev" field in **vertex** (if
+            any) is compared against the revision of the target document.
+        :type check_rev: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :param check_rev: If set to True, the "_rev" field in **vertex** (if
-            present) is compared against the revision of the target document.
-        :type check_rev: bool
-        :return: ID, revision and key of the replaced document.
-        :rtype: dict
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
         :raise arango.exceptions.DocumentReplaceError: If replace fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
         """
-        params = {}
+        vertex_id, headers = self._prep_from_body(vertex, check_rev)
+
+        params = {'silent': silent}
         if sync is not None:
             params['waitForSync'] = sync
 
-        headers = {}
-        rev = vertex.get('_rev')
-        if check_rev and rev is not None:
-            headers['If-Match'] = rev
+        command = 'gm._graph("{}").{}.replace("{}",{},{})'.format(
+            self.graph,
+            self.name,
+            vertex_id,
+            dumps(vertex),
+            dumps(params)
+        ) if self._is_transaction else None
 
         request = Request(
             method='put',
-            endpoint='/_api/gharial/{}/vertex/{}/{}'.format(
-                self._graph, self.name, vertex['_key']
+            endpoint='/_api/gharial/{}/vertex/{}'.format(
+                self._graph, vertex_id
             ),
+            headers=headers,
             params=params,
             data=vertex,
-            headers=headers
+            command=command,
+            write=self.name
         )
 
         def response_handler(resp):
@@ -2411,58 +2606,473 @@ class VertexCollection(Base):
                 raise DocumentRevisionError(resp)
             elif not resp.is_success:
                 raise DocumentReplaceError(resp)
-            result = resp.body['vertex']
+            if silent is True:
+                return True
+            if self._is_transaction:
+                result = resp.body
+            else:
+                result = resp.body['vertex']
             result['_old_rev'] = result.pop('_oldRev')
             return result
 
         return self._execute(request, response_handler)
 
-    def delete(self, vertex, ignore_missing=False, sync=None, check_rev=True):
+    def delete(self,
+               vertex,
+               rev=None,
+               check_rev=True,
+               ignore_missing=False,
+               sync=None):
         """Delete a vertex document.
 
-        :param vertex: Vertex document body, ID or key.
-        :type vertex: dict or str or unicode
+        :param vertex: Vertex document ID, key or body. Document body must
+            contain the "_id" or "_key" field.
+        :type vertex: str | unicode | dict
+        :param rev: Expected document revision. Overrides the value of "_rev"
+            field in **vertex** if any.
+        :type rev: str | unicode
+        :param check_rev: If set to True, the revision of **vertex** (if any)
+            is compared against the revision of the target vertex.
+        :type check_rev: bool
         :param ignore_missing: Do not raise an exception on missing document.
+            This parameter has no effect in transactions where an exception is
+            always raised.
         :type ignore_missing: bool
         :param sync: Block until the operation is synchronized to disk.
         :type sync: bool
-        :param check_rev: If set to True, the "_rev" field in **vertex** is
-            compared against the revision of the target document. (this only
-            applicable when **vertex** is a document body and not a key).
-        :type check_rev: bool
-        :return: True if document was deleted successfully, False otherwise.
+        :return: True if document was deleted successfully, False if document
+            is missing and **ignore_missing** was set to True (does not apply
+            in transactions).
         :rtype: bool
         :raise arango.exceptions.DocumentDeleteError: If delete fails.
-        :raise arango.exceptions.DocumentRevisionError: If revs do not match.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
         """
-        key, rev = self._get_key_and_rev(vertex)
+        handle, _, headers = self._prep_from_doc(vertex, rev, check_rev)
 
-        params = {}
-        if sync is not None:
-            params['waitForSync'] = sync
-
-        headers = {}
-        if check_rev and rev is not None:
-            headers['If-Match'] = rev
+        params = {} if sync is None else {'waitForSync': sync}
+        command = 'gm._graph("{}").{}.remove("{}",{})'.format(
+            self.graph,
+            self.name,
+            handle,
+            dumps(params)
+        ) if self._is_transaction else None
 
         request = Request(
             method='delete',
-            endpoint='/_api/gharial/{}/vertex/{}/{}'.format(
-                self._graph, self.name, key
+            endpoint='/_api/gharial/{}/vertex/{}'.format(
+                self._graph, handle
             ),
             params=params,
-            headers=headers
+            headers=headers,
+            command=command,
+            write=self.name
+        )
+
+        def response_handler(resp):
+            if resp.error_code == 1202 and ignore_missing:
+                return False
+            if resp.status_code == 412:
+                raise DocumentRevisionError(resp)
+            if not resp.is_success:
+                raise DocumentDeleteError(resp)
+            return True
+
+        return self._execute(request, response_handler)
+
+
+class EdgeCollection(Collection):
+    """ArangoDB edge collection.
+
+    An edge collection consists of edge documents. It is uniquely identified
+    by its name which must consist only of alphanumeric characters, hyphen and
+    and underscore. Edge collections share their namespace with other types of
+    collections.
+
+    Documents in an edge collection are fully accessible from a standard
+    collection. Managing documents through an edge collection, however, adds
+    additional guarantees: all modifications are executed in transactions and
+    edge documents are checked against the edge definitions on insert.
+
+    :param connection: HTTP connection.
+    :type connection: arango.connection.Connection
+    :param executor: API executor.
+    :type executor: arango.executor.DefaultExecutor
+    :param graph: Graph name.
+    :type graph: str | unicode
+    :param name: Edge collection name.
+    :type name: str | unicode
+    """
+
+    def __init__(self, connection, executor, graph, name):
+        super(EdgeCollection, self).__init__(connection, executor, name)
+        self._graph = graph
+
+    def __repr__(self):
+        return '<EdgeCollection {}>'.format(self.name)
+
+    def __getitem__(self, key):
+        return self.get(key)
+
+    @property
+    def graph(self):
+        """Return the graph name.
+
+        :return: Graph name.
+        :rtype: str | unicode
+        """
+        return self._graph
+
+    def get(self, edge, rev=None, check_rev=True):
+        """Return an edge document.
+
+        :param edge: Edge document ID, key or body. Document body must contain
+            the "_id" or "_key" field.
+        :type edge: str | unicode | dict
+        :param rev: Expected document revision. Overrides the value of "_rev"
+            field in **edge** if any.
+        :type rev: str | unicode
+        :param check_rev: If set to True, the revision of **edge** (if any) is
+            compared against the revision of the target edge document.
+        :type check_rev: bool
+        :return: Edge document or None if not found.
+        :rtype: dict | None
+        :raise arango.exceptions.DocumentGetError: If retrieval fails.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
+        """
+        handle, body, headers = self._prep_from_doc(edge, rev, check_rev)
+
+        command = 'gm._graph("{}").{}.document({})'.format(
+            self.graph,
+            self.name,
+            dumps(body)
+        ) if self._is_transaction else None
+
+        request = Request(
+            method='get',
+            endpoint='/_api/gharial/{}/edge/{}'.format(
+                self._graph, handle
+            ),
+            headers=headers,
+            command=command,
+            read=self.name
+        )
+
+        def response_handler(resp):
+            if resp.error_code == 1202:
+                return None
+            if resp.status_code == 412:
+                raise DocumentRevisionError(resp)
+            if not resp.is_success:
+                raise DocumentGetError(resp)
+            if self._is_transaction:
+                return resp.body
+            return resp.body['edge']
+
+        return self._execute(request, response_handler)
+
+    def insert(self, edge, sync=None, silent=False):
+        """Insert a new edge document.
+
+        :param edge: New edge document to insert. It must contain "_from" and
+            "_to" fields. If it has "_key" field, its value is used as the key
+            of the new edge document (otherwise it is auto-generated). Any
+            "_id" or "_rev" field is ignored.
+        :type edge: dict
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
+        :raise arango.exceptions.DocumentInsertError: If insert fails.
+        """
+        params = {'silent': silent}
+        if sync is not None:
+            params['waitForSync'] = sync
+
+        command = 'gm._graph("{}").{}.save("{}","{}",{},{})'.format(
+            self.graph,
+            self.name,
+            edge['_from'],
+            edge['_to'],
+            dumps(edge),
+            dumps(params)
+        ) if self._is_transaction else None
+
+        request = Request(
+            method='post',
+            endpoint='/_api/gharial/{}/edge/{}'.format(
+                self._graph, self.name
+            ),
+            data=edge,
+            params=params,
+            command=command,
+            write=self.name
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise DocumentInsertError(resp)
+            if silent is True:
+                return True
+            if self._is_transaction:
+                return resp.body
+            return resp.body['edge']
+
+        return self._execute(request, response_handler)
+
+    def update(self,
+               edge,
+               check_rev=True,
+               keep_none=True,
+               sync=None,
+               silent=False):
+        """Update an edge document.
+
+        :param edge: Partial or full edge document with the updated values. It
+            must contain the "_key" or "_id" field.
+        :type edge: dict
+        :param check_rev: If set to True, the "_rev" field in **edge** (if any)
+            is compared against the revision of the target document.
+        :type check_rev: bool
+        :param keep_none: If set to True, fields with value None are retained
+            in the document. If set to False, they are removed completely.
+        :type keep_none: bool
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
+        :raise arango.exceptions.DocumentUpdateError: If update fails.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
+        """
+        edge_id, headers = self._prep_from_body(edge, check_rev)
+
+        params = {
+            'keepNull': keep_none,
+            'overwrite': not check_rev,
+            'silent': silent
+        }
+        if sync is not None:
+            params['waitForSync'] = sync
+
+        command = 'gm._graph("{}").{}.update("{}",{},{})'.format(
+            self.graph,
+            self.name,
+            edge_id,
+            dumps(edge),
+            dumps(params)
+        ) if self._is_transaction else None
+
+        request = Request(
+            method='patch',
+            endpoint='/_api/gharial/{}/edge/{}'.format(
+                self._graph, edge_id
+            ),
+            headers=headers,
+            params=params,
+            data=edge,
+            command=command,
+            write=self.name
         )
 
         def response_handler(resp):
             if resp.status_code == 412:
                 raise DocumentRevisionError(resp)
-            elif resp.status_code == 404 and resp.error_code == 1202:
-                if ignore_missing:
-                    return False
-                raise DocumentDeleteError(resp)
             if not resp.is_success:
-                raise DocumentDeleteError(resp)
-            return resp.body['removed']
+                raise DocumentUpdateError(resp)
+            if silent is True:
+                return True
+            if self._is_transaction:
+                result = resp.body
+            else:
+                result = resp.body['edge']
+            result['_old_rev'] = result.pop('_oldRev')
+            return result
 
         return self._execute(request, response_handler)
+
+    def replace(self, edge, check_rev=True, sync=None, silent=False):
+        """Replace an edge document.
+
+        :param edge: New edge document to replace the old one with. It must
+            contain the "_key" or "_id" field. It must also contain the "_from"
+            and "_to" fields.
+        :type edge: dict
+        :param check_rev: If set to True, the "_rev" field in **edge** (if any)
+            is compared against the revision of the target document.
+        :type check_rev: bool
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
+        :raise arango.exceptions.DocumentReplaceError: If replace fails.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
+        """
+        edge_id, headers = self._prep_from_body(edge, check_rev)
+
+        params = {'silent': silent}
+        if sync is not None:
+            params['waitForSync'] = sync
+
+        command = 'gm._graph("{}").{}.replace("{}",{},{})'.format(
+            self.graph,
+            self.name,
+            edge_id,
+            dumps(edge),
+            dumps(params)
+        ) if self._is_transaction else None
+
+        request = Request(
+            method='put',
+            endpoint='/_api/gharial/{}/edge/{}'.format(
+                self._graph, edge_id
+            ),
+            headers=headers,
+            params=params,
+            data=edge,
+            command=command,
+            write=self.name
+        )
+
+        def response_handler(resp):
+            if resp.status_code == 412:
+                raise DocumentRevisionError(resp)
+            if not resp.is_success:
+                raise DocumentReplaceError(resp)
+            if silent is True:
+                return True
+            if self._is_transaction:
+                result = resp.body
+            else:
+                result = resp.body['edge']
+            result['_old_rev'] = result.pop('_oldRev')
+            return result
+
+        return self._execute(request, response_handler)
+
+    def delete(self,
+               edge,
+               rev=None,
+               check_rev=True,
+               ignore_missing=False,
+               sync=None):
+        """Delete an edge document.
+
+        :param edge: Edge document ID, key or body. Document body must contain
+            the "_id" or "_key" field.
+        :type edge: str | unicode | dict
+        :param rev: Expected document revision. Overrides the value of "_rev"
+            field in **edge** if any.
+        :type rev: str | unicode
+        :param check_rev: If set to True, the revision of **edge** (if any)
+            is compared against the revision of the target document.
+        :type check_rev: bool
+        :param ignore_missing: Do not raise an exception on missing document.
+            This parameter has no effect in transactions where an exception is
+            always raised.
+        :type ignore_missing: bool
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :return: True if document was deleted successfully, False if document
+            is missing and **ignore_missing** was set to True (does not apply
+            in transactions).
+        :rtype: bool
+        :raise arango.exceptions.DocumentDeleteError: If delete fails.
+        :raise arango.exceptions.DocumentRevisionError: If revisions mismatch.
+        """
+        handle, _, headers = self._prep_from_doc(edge, rev, check_rev)
+
+        params = {} if sync is None else {'waitForSync': sync}
+        command = 'gm._graph("{}").{}.remove("{}",{})'.format(
+            self.graph,
+            self.name,
+            handle,
+            dumps(params)
+        ) if self._is_transaction else None
+
+        request = Request(
+            method='delete',
+            endpoint='/_api/gharial/{}/edge/{}'.format(
+                self._graph, handle
+            ),
+            params=params,
+            headers=headers,
+            command=command,
+            write=self.name
+        )
+
+        def response_handler(resp):
+            if resp.error_code == 1202 and ignore_missing:
+                return False
+            if resp.status_code == 412:
+                raise DocumentRevisionError(resp)
+            if not resp.is_success:
+                raise DocumentDeleteError(resp)
+            return True
+
+        return self._execute(request, response_handler)
+
+    def link(self, from_vertex, to_vertex, data=None, sync=None, silent=False):
+        """Insert a new edge document linking the given vertices.
+
+        :param from_vertex: From vertex document body with "_id" field.
+        :type from_vertex: dict
+        :param to_vertex: To vertex document body with "_id" field.
+        :type to_vertex: dict
+        :param data: Any extra data for the new edge document (e.g. "_key").
+        :type data: dict
+        :param sync: Block until the operation is synchronized to disk.
+        :type sync: bool
+        :param silent: If set to True, no document metadata is returned. This
+            can be used to save resources.
+        :type silent: bool
+        :return: Document metadata (e.g. document key, revision) or True if
+            parameter **silent** was set to True.
+        :rtype: bool | dict
+        :raise arango.exceptions.DocumentInsertError: If insert fails.
+        """
+        edge = {'_from': from_vertex['_id'], '_to': to_vertex['_id']}
+        if data is not None:
+            edge.update(data)
+        return self.insert(edge, sync=sync, silent=silent)
+
+    # TODO ArangoDB 3.3.x is throwing 501 ILLEGAL /_api/edges' not implemented
+    # def edges(self, vertex, direction=None):
+    #     """Return the edge documents coming in and/or out of the vertex.
+    #
+    #     :param vertex: Start vertex document ID or body. Document body must
+    #         contain the "_id" or "_key" field.
+    #     :type vertex: str | unicode | dict
+    #     :param direction: The direction of the edges. Allowed values are "in"
+    #         and "out". If not set, edges in both directions are returned.
+    #     :type direction: str | unicode
+    #     :return: List of edges and statistics.
+    #     :rtype: dict
+    #     :raise arango.exceptions.EdgeListError: If retrieval fails.
+    #     """
+    #     params = {'vertex': self._get_doc_id(vertex)}
+    #     if direction is not None:
+    #         params['direction'] = direction
+    #
+    #     request = Request(
+    #         method='delete',
+    #         endpoint='/_api/edges/{}'.format(self.name),
+    #         params=params
+    #     )
+    #
+    #     def response_handler(resp):
+    #         if not resp.is_success:
+    #             raise EdgeListError(resp)
+    #         return resp.body
+    #
+    #     return self._execute(request, response_handler)

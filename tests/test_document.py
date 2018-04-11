@@ -1,9 +1,10 @@
 from __future__ import absolute_import, unicode_literals
 
-import pytest
 from six import string_types
 
 from arango.exceptions import (
+    CursorNextError,
+    CursorCloseError,
     DocumentCountError,
     DocumentDeleteError,
     DocumentGetError,
@@ -14,17 +15,24 @@ from arango.exceptions import (
     DocumentUpdateError,
     DocumentKeysError,
     DocumentIDsError,
-    CursorNextError,
-    CursorCloseError
+    DocumentParseError,
 )
-from tests.utils import (
-    clean,
+from tests.helpers import (
+    assert_raises,
+    clean_doc,
     extract,
-    generate_document_key
+    generate_doc_key,
+    generate_col_name
 )
 
 
 def test_document_insert(col, docs):
+    # Test insert document with no key
+    result = col.insert({})
+    assert result['_key'] in col
+    assert len(col) == 1
+    col.truncate()
+
     # Test insert with default options
     for doc in docs:
         result = col.insert(doc)
@@ -35,7 +43,7 @@ def test_document_insert(col, docs):
     assert len(col) == len(docs)
     col.truncate()
 
-    # Test insert with sync
+    # Test insert with sync set to True
     doc = docs[0]
     result = col.insert(doc, sync=True)
     assert result['_id'] == '{}/{}'.format(col.name, doc['_key'])
@@ -44,7 +52,7 @@ def test_document_insert(col, docs):
     assert col[doc['_key']]['_key'] == doc['_key']
     assert col[doc['_key']]['val'] == doc['val']
 
-    # Test insert without sync
+    # Test insert with sync set to False
     doc = docs[1]
     result = col.insert(doc, sync=False)
     assert result['_id'] == '{}/{}'.format(col.name, doc['_key'])
@@ -53,7 +61,7 @@ def test_document_insert(col, docs):
     assert col[doc['_key']]['_key'] == doc['_key']
     assert col[doc['_key']]['val'] == doc['val']
 
-    # Test insert with return_new
+    # Test insert with return_new set to True
     doc = docs[2]
     result = col.insert(doc, return_new=True)
     assert result['_id'] == '{}/{}'.format(col.name, doc['_key'])
@@ -66,7 +74,7 @@ def test_document_insert(col, docs):
     assert col[doc['_key']]['_key'] == doc['_key']
     assert col[doc['_key']]['val'] == doc['val']
 
-    # Test insert without return_new
+    # Test insert with return_new set to False
     doc = docs[3]
     result = col.insert(doc, return_new=False)
     assert result['_id'] == '{}/{}'.format(col.name, doc['_key'])
@@ -76,10 +84,16 @@ def test_document_insert(col, docs):
     assert col[doc['_key']]['_key'] == doc['_key']
     assert col[doc['_key']]['val'] == doc['val']
 
+    # Test insert with silent set to True
+    doc = docs[4]
+    assert col.insert(doc, silent=True) is True
+    assert col[doc['_key']]['_key'] == doc['_key']
+    assert col[doc['_key']]['val'] == doc['val']
+
     # Test insert duplicate document
-    with pytest.raises(DocumentInsertError) as err:
+    with assert_raises(DocumentInsertError) as err:
         col.insert(doc)
-    assert 'unique constraint violated' in str(err.value)
+    assert err.value.error_code == 1210
 
 
 def test_document_insert_many(col, bad_col, docs):
@@ -93,7 +107,7 @@ def test_document_insert_many(col, bad_col, docs):
     assert len(col) == len(docs)
     col.truncate()
 
-    # Test insert_many with sync
+    # Test insert_many with sync set to True
     results = col.insert_many(docs, sync=True)
     for result, doc in zip(results, docs):
         assert result['_id'] == '{}/{}'.format(col.name, doc['_key'])
@@ -103,7 +117,7 @@ def test_document_insert_many(col, bad_col, docs):
         assert col[doc['_key']]['val'] == doc['val']
     col.truncate()
 
-    # Test insert_many without sync
+    # Test insert_many with sync set to False
     results = col.insert_many(docs, sync=False)
     for result, doc in zip(results, docs):
         assert result['_id'] == '{}/{}'.format(col.name, doc['_key'])
@@ -113,7 +127,7 @@ def test_document_insert_many(col, bad_col, docs):
         assert col[doc['_key']]['val'] == doc['val']
     col.truncate()
 
-    # Test insert_many with return_new
+    # Test insert_many with return_new set to True
     results = col.insert_many(docs, return_new=True)
     for result, doc in zip(results, docs):
         assert result['_id'] == '{}/{}'.format(col.name, doc['_key'])
@@ -127,7 +141,7 @@ def test_document_insert_many(col, bad_col, docs):
         assert col[doc['_key']]['val'] == doc['val']
     col.truncate()
 
-    # Test insert_many without return_new
+    # Test insert_many with return_new set to False
     results = col.insert_many(docs, return_new=False)
     for result, doc in zip(results, docs):
         assert result['_id'] == '{}/{}'.format(col.name, doc['_key'])
@@ -136,18 +150,26 @@ def test_document_insert_many(col, bad_col, docs):
         assert 'new' not in result
         assert col[doc['_key']]['_key'] == doc['_key']
         assert col[doc['_key']]['val'] == doc['val']
+    col.truncate()
+
+    # Test insert_many with silent set to True
+    assert col.insert_many(docs, silent=True) is True
+    for doc in docs:
+        assert col[doc['_key']]['_key'] == doc['_key']
+        assert col[doc['_key']]['val'] == doc['val']
 
     # Test insert_many duplicate documents
     results = col.insert_many(docs, return_new=False)
     for result, doc in zip(results, docs):
         isinstance(result, DocumentInsertError)
 
-    # Test get with bad credentials
-    with pytest.raises(DocumentInsertError):
+    # Test get with bad database
+    with assert_raises(DocumentInsertError) as err:
         bad_col.insert_many(docs)
+    assert err.value.error_code == 1228
 
 
-def test_document_update(col, bad_col, docs):
+def test_document_update(col, docs):
     doc = docs[0]
     col.insert(doc)
 
@@ -160,7 +182,7 @@ def test_document_update(col, bad_col, docs):
     assert col[doc['_key']]['val'] == {'foo': 1}
     old_rev = doc['_rev']
 
-    # Test update with merge
+    # Test update with merge set to True
     doc['val'] = {'bar': 2}
     doc = col.update(doc, merge=True)
     assert doc['_id'] == '{}/1'.format(col.name)
@@ -170,7 +192,7 @@ def test_document_update(col, bad_col, docs):
     assert col[doc['_key']]['val'] == {'foo': 1, 'bar': 2}
     old_rev = doc['_rev']
 
-    # Test update without merge
+    # Test update with merge set to False
     doc['val'] = {'baz': 3}
     doc = col.update(doc, merge=False)
     assert doc['_id'] == '{}/1'.format(col.name)
@@ -180,7 +202,7 @@ def test_document_update(col, bad_col, docs):
     assert col[doc['_key']]['val'] == {'baz': 3}
     old_rev = doc['_rev']
 
-    # Test update with keep_none
+    # Test update with keep_none set to True
     doc['val'] = None
     doc = col.update(doc, keep_none=True)
     assert doc['_id'] == '{}/1'.format(col.name)
@@ -190,7 +212,7 @@ def test_document_update(col, bad_col, docs):
     assert col[doc['_key']]['val'] is None
     old_rev = doc['_rev']
 
-    # Test update without keep_none
+    # Test update with keep_none set to False
     doc['val'] = None
     doc = col.update(doc, keep_none=False)
     assert doc['_id'] == '{}/1'.format(col.name)
@@ -200,7 +222,7 @@ def test_document_update(col, bad_col, docs):
     assert 'val' not in col[doc['_key']]
     old_rev = doc['_rev']
 
-    # Test update with return_new and return_old
+    # Test update with return_new and return_old set to True
     doc['val'] = 3
     doc = col.update(doc, return_new=True, return_old=True)
     assert doc['_id'] == '{}/1'.format(col.name)
@@ -214,7 +236,7 @@ def test_document_update(col, bad_col, docs):
     assert col[doc['_key']]['val'] == 3
     old_rev = doc['_rev']
 
-    # Test update without return_new and return_old
+    # Test update with return_new and return_old set to False
     doc['val'] = 4
     doc = col.update(doc, return_new=False, return_old=False)
     assert doc['_id'] == '{}/1'.format(col.name)
@@ -226,15 +248,24 @@ def test_document_update(col, bad_col, docs):
     assert col[doc['_key']]['val'] == 4
     old_rev = doc['_rev']
 
-    # Test update with check_rev
+    # Test update with check_rev set to True
     doc['val'] = 5
     doc['_rev'] = old_rev + '0'
-    with pytest.raises(DocumentRevisionError) as err:
+    with assert_raises(DocumentRevisionError) as err:
         col.update(doc, check_rev=True)
-    assert 'precondition failed' in str(err.value)
+    assert err.value.error_code == 1200
     assert col[doc['_key']]['val'] == 4
 
-    # Test update with sync
+    # Test update with check_rev set to False
+    doc = col.update(doc, check_rev=False)
+    assert doc['_id'] == '{}/1'.format(col.name)
+    assert doc['_key'] == doc['_key']
+    assert isinstance(doc['_rev'], string_types)
+    assert doc['_old_rev'] == old_rev
+    assert col[doc['_key']]['val'] == 5
+    old_rev = doc['_rev']
+
+    # Test update with sync set to True
     doc['val'] = 6
     doc = col.update(doc, sync=True, check_rev=False)
     assert doc['_id'] == '{}/1'.format(col.name)
@@ -244,7 +275,7 @@ def test_document_update(col, bad_col, docs):
     assert col[doc['_key']]['val'] == 6
     old_rev = doc['_rev']
 
-    # Test update without sync
+    # Test update with sync set to False
     doc['val'] = 7
     doc = col.update(doc, sync=False, check_rev=False)
     assert doc['_id'] == '{}/1'.format(col.name)
@@ -256,15 +287,17 @@ def test_document_update(col, bad_col, docs):
 
     # Test update missing document
     missing_doc = docs[1]
-    with pytest.raises(DocumentUpdateError):
+    with assert_raises(DocumentUpdateError) as err:
         col.update(missing_doc)
+    assert err.value.error_code == 1202
     assert missing_doc['_key'] not in col
     assert col[doc['_key']]['val'] == 7
     assert col[doc['_key']]['_rev'] == old_rev
 
-    # Test update with bad credentials
-    with pytest.raises(DocumentUpdateError):
-        bad_col.update(doc)
+    # Test update with silent set to True
+    doc['val'] = 8
+    assert col.update(doc, silent=True) is True
+    assert col[doc['_key']]['val'] == 8
 
 
 def test_document_update_many(col, bad_col, docs):
@@ -284,7 +317,7 @@ def test_document_update_many(col, bad_col, docs):
         assert col[doc_key]['val'] == {'foo': 1}
         old_revs[doc_key] = result['_rev']
 
-    # Test update_many with merge
+    # Test update_many with merge set to True
     for doc in docs:
         doc['val'] = {'bar': 2}
     results = col.update_many(docs, merge=True)
@@ -297,7 +330,7 @@ def test_document_update_many(col, bad_col, docs):
         assert col[doc_key]['val'] == {'foo': 1, 'bar': 2}
         old_revs[doc_key] = result['_rev']
 
-    # Test update_many without merge
+    # Test update_many with merge set to False
     for doc in docs:
         doc['val'] = {'baz': 3}
     results = col.update_many(docs, merge=False)
@@ -310,7 +343,7 @@ def test_document_update_many(col, bad_col, docs):
         assert col[doc_key]['val'] == {'baz': 3}
         old_revs[doc_key] = result['_rev']
 
-    # Test update_many with keep_none
+    # Test update_many with keep_none set to True
     for doc in docs:
         doc['val'] = None
     results = col.update_many(docs, keep_none=True)
@@ -323,7 +356,7 @@ def test_document_update_many(col, bad_col, docs):
         assert col[doc_key]['val'] is None
         old_revs[doc_key] = result['_rev']
 
-    # Test update_many without keep_none
+    # Test update_many with keep_none set to False
     for doc in docs:
         doc['val'] = None
     results = col.update_many(docs, keep_none=False)
@@ -336,7 +369,7 @@ def test_document_update_many(col, bad_col, docs):
         assert 'val' not in col[doc_key]
         old_revs[doc_key] = result['_rev']
 
-    # Test update_many with return_new and return_old
+    # Test update_many with return_new and return_old set to True
     for doc in docs:
         doc['val'] = 3
     results = col.update_many(docs, return_new=True, return_old=True)
@@ -353,7 +386,7 @@ def test_document_update_many(col, bad_col, docs):
         assert col[doc_key]['val'] == 3
         old_revs[doc_key] = result['_rev']
 
-    # Test update without return_new and return_old
+    # Test update_many with return_new and return_old set to False
     for doc in docs:
         doc['val'] = 4
     results = col.update_many(docs, return_new=False, return_old=False)
@@ -368,7 +401,7 @@ def test_document_update_many(col, bad_col, docs):
         assert col[doc_key]['val'] == 4
         old_revs[doc_key] = result['_rev']
 
-    # Test update_many with check_rev
+    # Test update_many with check_rev set to True
     for doc in docs:
         doc['val'] = 5
         doc['_rev'] = old_revs[doc['_key']] + '0'
@@ -378,7 +411,18 @@ def test_document_update_many(col, bad_col, docs):
     for doc in col:
         assert doc['val'] == 4
 
-    # Test update_many with sync
+    # Test update_many with check_rev set to False
+    results = col.update_many(docs, check_rev=False)
+    for result, doc in zip(results, docs):
+        doc_key = doc['_key']
+        assert result['_id'] == '{}/{}'.format(col.name, doc_key)
+        assert result['_key'] == doc_key
+        assert isinstance(result['_rev'], string_types)
+        assert result['_old_rev'] == old_revs[doc_key]
+        assert col[doc_key]['val'] == 5
+        old_revs[doc_key] = result['_rev']
+
+    # Test update_many with sync set to True
     for doc in docs:
         doc['val'] = 6
     results = col.update_many(docs, sync=True, check_rev=False)
@@ -391,7 +435,7 @@ def test_document_update_many(col, bad_col, docs):
         assert col[doc_key]['val'] == 6
         old_revs[doc_key] = result['_rev']
 
-    # Test update_many without sync
+    # Test update_many with sync set to False
     for doc in docs:
         doc['val'] = 7
     results = col.update_many(docs, sync=False, check_rev=False)
@@ -404,9 +448,22 @@ def test_document_update_many(col, bad_col, docs):
         assert col[doc_key]['val'] == 7
         old_revs[doc_key] = result['_rev']
 
-    # Test update_many with bad credentials
-    with pytest.raises(DocumentUpdateError):
+    # Test update_many with bad database
+    with assert_raises(DocumentUpdateError) as err:
         bad_col.update_many(docs)
+    assert err.value.error_code == 1228
+
+    # Test update_many with silent set to True
+    for doc in docs:
+        doc['val'] = 8
+    assert col.update_many(docs, silent=True, check_rev=False) is True
+    for doc in docs:
+        assert col[doc['_key']]['val'] == 8
+
+    # Test update_many with bad documents
+    with assert_raises(DocumentParseError) as err:
+        bad_col.update_many([{}])
+    assert str(err.value) == 'field "_key" or "_id" required'
 
 
 def test_document_update_match(col, bad_col, docs):
@@ -423,11 +480,11 @@ def test_document_update_match(col, bad_col, docs):
         assert col[doc_key]['val'] == 1
         assert col[doc_key]['foo'] == 1
 
-    # Test update multiple matching documents with limit
+    # Test update multiple matching documents with limit set to 1
     assert col.update_match({'val': 1}, {'foo': 2}, limit=1) == 1
     assert [doc.get('foo') for doc in col].count(2) == 1
 
-    # Test update matching documents with sync and keep_none
+    # Test update matching documents with sync and keep_none set to True
     assert col.update_match(
         {'val': 3},
         {'val': None},
@@ -436,7 +493,7 @@ def test_document_update_match(col, bad_col, docs):
     ) == 1
     assert col['3']['val'] is None
 
-    # Test update matching documents without sync and keep_none
+    # Test update matching documents with sync and keep_none set to False
     assert col.update_match(
         {'val': 1},
         {'val': None},
@@ -446,12 +503,13 @@ def test_document_update_match(col, bad_col, docs):
     assert 'val' not in col['1']
     assert 'val' not in col['2']
 
-    # Test update matching documents with bad credentials
-    with pytest.raises(DocumentUpdateError):
+    # Test update matching documents with bad database
+    with assert_raises(DocumentUpdateError) as err:
         bad_col.update_match({'val': 1}, {'foo': 1})
+    assert err.value.error_code == 1228
 
 
-def test_document_replace(col, bad_col, docs):
+def test_document_replace(col, docs):
     doc = docs[0]
     col.insert(doc)
 
@@ -466,7 +524,7 @@ def test_document_replace(col, bad_col, docs):
     assert 'val' not in col[doc['_key']]
     old_rev = doc['_rev']
 
-    # Test update with return_new and return_old
+    # Test update with return_new and return_old set to True
     doc['bar'] = 3
     doc = col.replace(doc, return_new=True, return_old=True)
     assert doc['_id'] == '{}/1'.format(col.name)
@@ -483,7 +541,7 @@ def test_document_replace(col, bad_col, docs):
     assert 'foo' not in col[doc['_key']]
     old_rev = doc['_rev']
 
-    # Test update without return_new and return_old
+    # Test update with return_new and return_old set to False
     doc['baz'] = 4
     doc = col.replace(doc, return_new=False, return_old=False)
     assert doc['_id'] == '{}/1'.format(col.name)
@@ -496,45 +554,55 @@ def test_document_replace(col, bad_col, docs):
     assert 'bar' not in col[doc['_key']]
     old_rev = doc['_rev']
 
-    # Test replace with check_rev
+    # Test replace with check_rev set to True
     doc['foo'] = 5
     doc['_rev'] = old_rev + '0'
-    with pytest.raises(DocumentRevisionError):
+    with assert_raises(DocumentRevisionError):
         col.replace(doc, check_rev=True)
     assert 'foo' not in col[doc['_key']]
     assert col[doc['_key']]['baz'] == 4
 
-    # Test replace with sync
-    doc['foo'] = 5
-    doc = col.replace(doc, sync=True, check_rev=False)
+    # Test replace with check_rev set to False
+    doc = col.replace(doc, check_rev=False)
     assert doc['_id'] == '{}/1'.format(col.name)
     assert doc['_key'] == doc['_key']
     assert isinstance(doc['_rev'], string_types)
     assert doc['_old_rev'] == old_rev
     assert col[doc['_key']]['foo'] == 5
+    old_rev = doc['_rev']
+
+    # Test replace with sync set to True
+    doc['foo'] = 6
+    doc = col.replace(doc, sync=True, check_rev=False)
+    assert doc['_id'] == '{}/1'.format(col.name)
+    assert doc['_key'] == doc['_key']
+    assert isinstance(doc['_rev'], string_types)
+    assert doc['_old_rev'] == old_rev
+    assert col[doc['_key']]['foo'] == 6
     assert 'baz' not in col[doc['_key']]
     old_rev = doc['_rev']
 
-    # Test replace without sync
-    doc['bar'] = 6
+    # Test replace with sync set to False
+    doc['bar'] = 7
     doc = col.replace(doc, sync=False, check_rev=False)
     assert doc['_id'] == '{}/1'.format(col.name)
     assert doc['_key'] == doc['_key']
     assert isinstance(doc['_rev'], string_types)
     assert doc['_old_rev'] == old_rev
-    assert col[doc['_key']]['bar'] == 6
+    assert col[doc['_key']]['bar'] == 7
     assert 'foo' not in col[doc['_key']]
     old_rev = doc['_rev']
 
     # Test replace missing document
-    with pytest.raises(DocumentReplaceError):
+    with assert_raises(DocumentReplaceError):
         col.replace(docs[1])
-    assert col[doc['_key']]['bar'] == 6
+    assert col[doc['_key']]['bar'] == 7
     assert col[doc['_key']]['_rev'] == old_rev
 
-    # Test replace with bad credentials
-    with pytest.raises(DocumentReplaceError):
-        bad_col.replace(doc)
+    # Test replace with silent set to True
+    doc['val'] = 8
+    assert col.replace(doc, silent=True) is True
+    assert col[doc['_key']]['val'] == 8
 
 
 def test_document_replace_many(col, bad_col, docs):
@@ -556,7 +624,7 @@ def test_document_replace_many(col, bad_col, docs):
         assert 'val' not in col[doc_key]
         old_revs[doc_key] = result['_rev']
 
-    # Test update with return_new and return_old
+    # Test update with return_new and return_old set to True
     for doc in docs:
         doc['bar'] = 3
         doc.pop('foo')
@@ -576,7 +644,7 @@ def test_document_replace_many(col, bad_col, docs):
         assert col[doc_key]['bar'] == 3
         old_revs[doc_key] = result['_rev']
 
-    # Test update without return_new and return_old
+    # Test update with return_new and return_old set to False
     for doc in docs:
         doc['baz'] = 4
         doc.pop('bar')
@@ -593,7 +661,7 @@ def test_document_replace_many(col, bad_col, docs):
         assert 'bar' not in col[doc_key]
         old_revs[doc_key] = result['_rev']
 
-    # Test replace_many with check_rev
+    # Test replace_many with check_rev set to True
     for doc in docs:
         doc['foo'] = 5
         doc.pop('baz')
@@ -605,10 +673,8 @@ def test_document_replace_many(col, bad_col, docs):
         assert 'foo' not in doc
         assert doc['baz'] == 4
 
-    # Test replace_many with sync
-    for doc in docs:
-        doc['foo'] = 5
-    results = col.replace_many(docs, sync=True, check_rev=False)
+    # Test replace_many with check_rev set to False
+    results = col.replace_many(docs, check_rev=False)
     for result, doc in zip(results, docs):
         doc_key = doc['_key']
         assert result['_id'] == '{}/{}'.format(col.name, doc_key)
@@ -619,9 +685,22 @@ def test_document_replace_many(col, bad_col, docs):
         assert 'baz' not in col[doc_key]
         old_revs[doc_key] = result['_rev']
 
-    # Test replace_many without sync
+    # Test replace_many with sync set to True
     for doc in docs:
-        doc['bar'] = 6
+        doc['foo'] = 6
+    results = col.replace_many(docs, sync=True, check_rev=False)
+    for result, doc in zip(results, docs):
+        doc_key = doc['_key']
+        assert result['_id'] == '{}/{}'.format(col.name, doc_key)
+        assert result['_key'] == doc_key
+        assert isinstance(result['_rev'], string_types)
+        assert result['_old_rev'] == old_revs[doc_key]
+        assert col[doc_key]['foo'] == 6
+        old_revs[doc_key] = result['_rev']
+
+    # Test replace_many with sync set to False
+    for doc in docs:
+        doc['bar'] = 7
         doc.pop('foo')
     results = col.replace_many(docs, sync=False, check_rev=False)
     for result, doc in zip(results, docs):
@@ -630,17 +709,32 @@ def test_document_replace_many(col, bad_col, docs):
         assert result['_key'] == doc_key
         assert isinstance(result['_rev'], string_types)
         assert result['_old_rev'] == old_revs[doc_key]
-        assert col[doc_key]['bar'] == 6
+        assert col[doc_key]['bar'] == 7
         assert 'foo' not in col[doc_key]
         old_revs[doc_key] = result['_rev']
 
-    # Test replace_many with bad credentials
-    with pytest.raises(DocumentReplaceError):
+    # Test replace_many with bad database
+    with assert_raises(DocumentReplaceError) as err:
         bad_col.replace_many(docs)
+    assert err.value.error_code == 1228
+
+    # Test replace_many with silent set to True
+    for doc in docs:
+        doc['foo'] = 8
+        doc.pop('bar')
+    assert col.replace_many(docs, silent=True, check_rev=False) is True
+    for doc in docs:
+        doc_key = doc['_key']
+        assert col[doc_key]['foo'] == 8
+        assert 'bar' not in col[doc_key]
+
+    # Test replace_many with bad documents
+    with assert_raises(DocumentParseError) as err:
+        bad_col.replace_many([{}])
+    assert str(err.value) == 'field "_key" or "_id" required'
 
 
 def test_document_replace_match(col, bad_col, docs):
-    # Set up test documents
     col.import_bulk(docs)
 
     # Test replace single matching document
@@ -654,16 +748,17 @@ def test_document_replace_match(col, bad_col, docs):
         assert 'val' not in col[doc_key]
         assert col[doc_key]['foo'] == 1
 
-    # Test replace multiple matching documents with limit
-    assert col.replace_match({'foo': 1}, {'bar': 2}, limit=1) == 1
+    # Test replace multiple matching documents with limit and sync
+    assert col.replace_match({'foo': 1}, {'bar': 2}, limit=1, sync=True) == 1
     assert [doc.get('bar') for doc in col].count(2) == 1
 
-    # Test replace matching documents with bad credentials
-    with pytest.raises(DocumentReplaceError):
+    # Test replace matching documents with bad database
+    with assert_raises(DocumentReplaceError) as err:
         bad_col.replace_match({'val': 1}, {'foo': 1})
+    assert err.value.error_code == 1228
 
 
-def test_document_delete(col, bad_col, docs):
+def test_document_delete(col, docs):
     # Set up test documents
     col.import_bulk(docs)
 
@@ -677,58 +772,60 @@ def test_document_delete(col, bad_col, docs):
     assert doc['_key'] not in col
     assert len(col) == 5
 
-    # Test delete (document doc_key) with default options
+    # Test delete (document ID) with return_old set to True
     doc = docs[1]
-    result = col.delete(doc['_key'])
-    assert result['_id'] == '{}/{}'.format(col.name, doc['_key'])
-    assert result['_key'] == doc['_key']
-    assert isinstance(result['_rev'], string_types)
-    assert 'old' not in result
-    assert doc['_key'] not in col
-    assert len(col) == 4
-
-    # Test delete (document ID) with return_old
-    doc = docs[2]
     doc_id = '{}/{}'.format(col.name, doc['_key'])
     result = col.delete(doc_id, return_old=True)
     assert result['_id'] == '{}/{}'.format(col.name, doc['_key'])
     assert result['_key'] == doc['_key']
     assert isinstance(result['_rev'], string_types)
     assert result['old']['_key'] == doc['_key']
-    assert result['old']['val'] == 3
+    assert result['old']['val'] == doc['val']
     assert doc['_key'] not in col
-    assert len(col) == 3
+    assert len(col) == 4
 
-    # Test delete (document doc_key) with sync
-    doc = docs[3]
+    # Test delete (document doc_key) with sync set to True
+    doc = docs[2]
     result = col.delete(doc, sync=True)
     assert result['_id'] == '{}/{}'.format(col.name, doc['_key'])
     assert result['_key'] == doc['_key']
     assert isinstance(result['_rev'], string_types)
     assert doc['_key'] not in col
-    assert len(col) == 2
+    assert len(col) == 3
 
-    # Test delete (document) with check_rev
+    # Test delete (document) with check_rev set to True
+    doc = docs[3]
+    bad_rev = col[doc['_key']]['_rev'] + '0'
+    bad_doc = doc.copy()
+    bad_doc.update({'_rev': bad_rev})
+    with assert_raises(DocumentRevisionError):
+        col.delete(bad_doc, check_rev=True)
+    assert bad_doc['_key'] in col
+    assert len(col) == 3
+
+    # Test delete (document) with check_rev set to False
     doc = docs[4]
     bad_rev = col[doc['_key']]['_rev'] + '0'
     bad_doc = doc.copy()
     bad_doc.update({'_rev': bad_rev})
-    with pytest.raises(DocumentRevisionError):
-        col.delete(bad_doc, check_rev=True)
-    assert bad_doc['_key'] in col
+    col.delete(bad_doc, check_rev=False)
+    assert doc['_key'] not in col
     assert len(col) == 2
 
-    # Test delete (document) with check_rev
-    missing_key = generate_document_key()
-    assert col.delete(missing_key, ignore_missing=True) is False
-    with pytest.raises(DocumentDeleteError):
-        col.delete(missing_key, ignore_missing=False)
+    # Test delete missing document
+    bad_key = generate_doc_key()
+    with assert_raises(DocumentDeleteError) as err:
+        col.delete(bad_key, ignore_missing=False)
+    assert err.value.error_code == 1202
     assert len(col) == 2
+    if col.context != 'transaction':
+        assert col.delete(bad_key, ignore_missing=True) is False
 
-    # Test delete with bad credentials
-    with pytest.raises(DocumentDeleteError):
-        bad_col.delete(doc)
-    assert len(col) == 2
+    # Test delete (document) with silent set to True
+    doc = docs[5]
+    assert col.delete(doc, silent=True) is True
+    assert doc['_key'] not in col
+    assert len(col) == 1
 
 
 def test_document_delete_many(col, bad_col, docs):
@@ -748,19 +845,7 @@ def test_document_delete_many(col, bad_col, docs):
         old_revs[doc_key] = result['_rev']
     assert len(col) == 0
 
-    # Test delete_many (document doc_keys) with default options
-    col.import_bulk(docs)
-    results = col.delete_many(docs)
-    for result, doc_key in zip(results, doc_keys):
-        assert result['_id'] == '{}/{}'.format(col.name, doc_key)
-        assert result['_key'] == doc_key
-        assert isinstance(result['_rev'], string_types)
-        assert 'old' not in result
-        assert doc_key not in col
-        old_revs[doc_key] = result['_rev']
-    assert len(col) == 0
-
-    # Test delete_many (documents) with return_old
+    # Test delete_many (documents) with return_old set to True
     col.import_bulk(docs)
     results = col.delete_many(docs, return_old=True)
     for result, doc in zip(results, docs):
@@ -774,7 +859,7 @@ def test_document_delete_many(col, bad_col, docs):
         old_revs[doc_key] = result['_rev']
     assert len(col) == 0
 
-    # Test delete_many (document doc_keys) with sync
+    # Test delete_many (document doc_keys) with sync set to True
     col.import_bulk(docs)
     results = col.delete_many(docs, sync=True)
     for result, doc in zip(results, docs):
@@ -787,7 +872,12 @@ def test_document_delete_many(col, bad_col, docs):
         old_revs[doc_key] = result['_rev']
     assert len(col) == 0
 
-    # Test delete_many (documents) with check_rev
+    # Test delete_many with silent set to True
+    col.import_bulk(docs)
+    assert col.delete_many(docs, silent=True) is True
+    assert len(col) == 0
+
+    # Test delete_many (documents) with check_rev set to True
     col.import_bulk(docs)
     for doc in docs:
         doc['_rev'] = old_revs[doc['_key']] + '0'
@@ -798,14 +888,19 @@ def test_document_delete_many(col, bad_col, docs):
 
     # Test delete_many (documents) with missing documents
     col.truncate()
-    results = col.delete_many([{'_key': '6'}, {'_key': '7'}])
+    results = col.delete_many([
+        {'_key': generate_doc_key()},
+        {'_key': generate_doc_key()},
+        {'_key': generate_doc_key()}
+    ])
     for result, doc in zip(results, docs):
         assert isinstance(result, DocumentDeleteError)
     assert len(col) == 0
 
-    # Test delete_many with bad credentials
-    with pytest.raises(DocumentDeleteError):
+    # Test delete_many with bad database
+    with assert_raises(DocumentDeleteError) as err:
         bad_col.delete_many(docs)
+    assert err.value.error_code == 1228
 
 
 def test_document_delete_match(col, bad_col, docs):
@@ -828,8 +923,10 @@ def test_document_delete_match(col, bad_col, docs):
     assert col.delete_match({'text': 'bar'}, limit=2) == 2
     assert [d['text'] for d in col].count('bar') == 1
 
-    with pytest.raises(DocumentDeleteError):
+    # Test delete matching documents with bad database
+    with assert_raises(DocumentDeleteError) as err:
         bad_col.delete_match(doc)
+    assert err.value.error_code == 1228
 
 
 def test_document_count(col, bad_col, docs):
@@ -839,10 +936,10 @@ def test_document_count(col, bad_col, docs):
     assert len(col) == len(docs)
     assert col.count() == len(docs)
 
-    with pytest.raises(DocumentCountError):
+    with assert_raises(DocumentCountError):
         len(bad_col)
 
-    with pytest.raises(DocumentCountError):
+    with assert_raises(DocumentCountError):
         bad_col.count()
 
 
@@ -867,7 +964,7 @@ def test_document_find(col, bad_col, docs):
         assert doc['_key'] in col
 
     # Test find with offset
-    found = list(col.find({'val': 1}, offset=1))
+    found = list(col.find({'val': 1}, skip=1))
     assert len(found) == 1
     for doc in map(dict, found):
         assert doc['_key'] in {'1', '2', '3'}
@@ -889,50 +986,360 @@ def test_document_find(col, bad_col, docs):
     assert list(col.find({'val': 3})) == []
     assert list(col.find({'val': 4})) == []
 
-    # Test find with bad credentials
-    with pytest.raises(DocumentGetError):
+    # Test find with bad database
+    with assert_raises(DocumentGetError) as err:
         bad_col.find({'val': 1})
+    assert err.value.error_code == 1228
+
+
+def test_document_find_near(col, bad_col, docs):
+    col.import_bulk(docs)
+
+    # Test find_near with default options
+    result = col.find_near(latitude=1, longitude=1)
+    assert extract('_key', result) == ['1', '2', '3', '4', '5', '6']
+
+    # Test find_near with limit of 0
+    result = col.find_near(latitude=1, longitude=1, limit=0)
+    assert extract('_key', result) == ['1', '2', '3', '4', '5', '6']
+
+    # Test find_near with limit of 1
+    result = col.find_near(latitude=1, longitude=1, limit=1)
+    assert extract('_key', result) == ['1']
+
+    # Test find_near with limit of 3
+    result = col.find_near(latitude=1, longitude=1, limit=3)
+    assert extract('_key', result) == ['1', '2', '3']
+
+    # Test find_near with limit of 3 (another set of coordinates)
+    result = col.find_near(latitude=5, longitude=5, limit=3)
+    assert extract('_key', result) == ['4', '5', '6']
+
+    # Test random with bad collection
+    with assert_raises(DocumentGetError):
+        bad_col.find_near(latitude=1, longitude=1, limit=1)
+
+    # Test find_near in an empty collection
+    col.truncate()
+    result = col.find_near(latitude=1, longitude=1, limit=1)
+    assert list(result) == []
+    result = col.find_near(latitude=5, longitude=5, limit=4)
+    assert list(result) == []
+
+    # Test find near with bad collection
+    with assert_raises(DocumentGetError) as err:
+        bad_col.find_near(latitude=1, longitude=1, limit=1)
+    assert err.value.error_code == 1228
+
+
+def test_document_find_in_range(col, bad_col, docs):
+    col.import_bulk(docs)
+
+    # Test find_in_range with default options
+    result = col.find_in_range('val', lower=1, upper=2)
+    assert extract('_key', result) == ['1']
+
+    # Test find_in_range with limit of 0
+    result = col.find_in_range('val', lower=1, upper=2, limit=0)
+    assert extract('_key', result) == ['1']
+
+    # Test find_in_range with limit of 3
+    result = col.find_in_range('val', lower=1, upper=5, limit=3)
+    assert extract('_key', result) == ['1', '2', '3']
+
+    # Test find_in_range with skip set to 0
+    result = col.find_in_range('val', lower=1, upper=5, skip=0)
+    assert extract('_key', result) == ['1', '2', '3', '4']
+
+    # Test find_in_range with skip set to 3
+    result = col.find_in_range('val', lower=1, upper=5, skip=2)
+    assert extract('_key', result) == ['3', '4']
+
+    # Test find_in_range with bad collection
+    with assert_raises(DocumentGetError) as err:
+        bad_col.find_in_range(field='val', lower=1, upper=2, skip=2)
+    assert err.value.error_code == 1228
+
+
+def test_document_find_in_radius(col, bad_col):
+    doc1 = {'_key': '1', 'loc': [1, 1]}
+    doc2 = {'_key': '2', 'loc': [1, 4]}
+    doc3 = {'_key': '3', 'loc': [4, 1]}
+    doc4 = {'_key': '4', 'loc': [4, 4]}
+
+    col.import_bulk([doc1, doc2, doc3, doc4])
+
+    result = list(col.find_in_radius(
+        latitude=1,
+        longitude=4,
+        radius=6,
+    ))
+    assert len(result) == 1
+    assert clean_doc(result[0]) == {'_key': '2', 'loc': [1, 4]}
+
+    result = list(col.find_in_radius(
+        latitude=1,
+        longitude=1,
+        radius=6,
+        distance='dist'
+    ))
+    assert len(result) == 1
+    if col.context == 'transaction':
+        assert clean_doc(result[0]) == {'_key': '1', 'loc': [1, 1]}
+    else:
+        assert clean_doc(result[0]) == {'_key': '1', 'loc': [1, 1], 'dist': 0}
+
+    # Test find_in_radius with bad collection
+    with assert_raises(DocumentGetError) as err:
+        bad_col.find_in_radius(3, 3, 10)
+    assert err.value.error_code == 1228
+
+
+def test_document_find_in_box(col, bad_col, geo):
+    doc1 = {'_key': '1', 'loc': [1, 1]}
+    doc2 = {'_key': '2', 'loc': [1, 5]}
+    doc3 = {'_key': '3', 'loc': [5, 1]}
+    doc4 = {'_key': '4', 'loc': [5, 5]}
+
+    col.import_bulk([doc1, doc2, doc3, doc4])
+
+    print(col.indexes())
+
+    # Test find_in_box with default options
+    result = col.find_in_box(
+        latitude1=0,
+        longitude1=0,
+        latitude2=6,
+        longitude2=3,
+        index=geo['id']
+    )
+    assert clean_doc(result) == [doc1, doc3]
+
+    # Test find_in_box with limit of 0
+    result = col.find_in_box(
+        latitude1=0,
+        longitude1=0,
+        latitude2=6,
+        longitude2=3,
+        limit=0,
+        index=geo['id']
+    )
+    assert clean_doc(result) == [doc1, doc3]
+
+    # Test find_in_box with limit of 1
+    result = col.find_in_box(
+        latitude1=0,
+        longitude1=0,
+        latitude2=6,
+        longitude2=3,
+        limit=1,
+    )
+    assert clean_doc(result) == [doc3]
+
+    # Test find_in_box with limit of 4
+    result = col.find_in_box(
+        latitude1=0,
+        longitude1=0,
+        latitude2=10,
+        longitude2=10,
+        limit=4
+    )
+    assert clean_doc(result) == [doc1, doc2, doc3, doc4]
+
+    # Test find_in_box with skip 1
+    result = col.find_in_box(
+        latitude1=0,
+        longitude1=0,
+        latitude2=6,
+        longitude2=3,
+        skip=1,
+    )
+    assert clean_doc(result) == [doc1]
+
+    # Test find_in_box with skip 3
+    result = col.find_in_box(
+        latitude1=0,
+        longitude1=0,
+        latitude2=10,
+        longitude2=10,
+        skip=2
+    )
+    assert clean_doc(result) == [doc1, doc2]
+
+    # Test find_in_box with bad collection
+    with assert_raises(DocumentGetError) as err:
+        bad_col.find_in_box(
+            latitude1=0,
+            longitude1=0,
+            latitude2=6,
+            longitude2=3,
+        )
+    assert err.value.error_code == 1228
+
+
+def test_document_find_by_text(col, docs):
+    col.import_bulk(docs)
+
+    # Test find_by_text with default options
+    result = col.find_by_text(field='text', query='foo,|bar')
+    assert clean_doc(result) == docs
+
+    # Test find_by_text with limit
+    result = col.find_by_text(field='text', query='foo', limit=1)
+    assert len(list(result)) == 1
+
+    result = col.find_by_text(field='text', query='foo', limit=2)
+    assert len(list(result)) == 2
+
+    result = col.find_by_text(field='text', query='foo', limit=3)
+    assert len(list(result)) == 3
+
+    # Test find_by_text with invalid queries
+    with assert_raises(DocumentGetError):
+        col.find_by_text(field='text', query='+')
+    with assert_raises(DocumentGetError):
+        col.find_by_text(field='text', query='|')
+
+    # Test find_by_text with missing column
+    with assert_raises(DocumentGetError) as err:
+        col.find_by_text(field='missing', query='foo')
+    assert err.value.error_code == 1571
 
 
 def test_document_has(col, bad_col, docs):
-    # Set up test documents
-    col.import_bulk(docs)
-    doc = docs[0]
-    doc_key = doc['_key']
-    doc_id = '{}/{}'.format(col.name, doc_key)
+    # Set up test document
+    result = col.insert(docs[0])
+    rev = result['_rev']
+    bad_rev = rev + '0'
 
-    # Test has existing document by body
-    assert col.has(doc) is True
+    doc_key = docs[0]['_key']
+    doc_id = col.name + '/' + doc_key
+    missing_doc_key = docs[1]['_key']
+    missing_doc_id = col.name + '/' + missing_doc_key
 
-    # Test has existing document by ID
-    assert col.has(doc_id) is True
+    # Test existing documents without revision or with good revision
+    for doc_input in [
+        doc_key,
+        doc_id,
+        {'_key': doc_key},
+        {'_id': doc_id},
+        {'_id': doc_id, '_key': doc_key},
+        {'_key': doc_key, '_rev': rev},
+        {'_id': doc_id, '_rev': rev},
+        {'_id': doc_id, '_key': doc_key, '_rev': rev},
+    ]:
+        assert doc_input in col
+        assert col.has(doc_input) is True
+        assert col.has(doc_input, rev=rev) is True
+        assert col.has(doc_input, rev=rev, check_rev=True) is True
+        assert col.has(doc_input, rev=rev, check_rev=False) is True
+        assert col.has(doc_input, rev=bad_rev, check_rev=False) is True
 
-    # Test has existing document by doc_key
-    assert col.has(doc_key) is True
+        with assert_raises(DocumentRevisionError) as err:
+            col.has(doc_input, rev=bad_rev, check_rev=True)
+        assert err.value.error_code == 1200
 
-    # Test has missing document
-    assert col.has(generate_document_key()) is False
+    # Test existing documents with bad revision
+    for doc_input in [
+        {'_key': doc_key, '_rev': bad_rev},
+        {'_id': doc_id, '_rev': bad_rev},
+        {'_id': doc_id, '_key': doc_key, '_rev': bad_rev},
+    ]:
+        with assert_raises(DocumentRevisionError) as err:
+            col.has(doc_input)
+        assert err.value.error_code == 1200
 
-    # Test has with correct revision
-    good_rev = col[doc_key]['_rev']
-    assert col.has(doc, rev=good_rev, check_rev=True) is True
+        with assert_raises(DocumentRevisionError) as err:
+            col.has(doc_input, rev=bad_rev)
+        assert err.value.error_code == 1200
 
-    # Test has with bad revision and check_rev turned off
-    bad_rev = col[doc_key]['_rev'] + '0'
-    assert col.has(doc, rev=bad_rev, check_rev=False) is True
+        with assert_raises(DocumentRevisionError) as err:
+            col.has(doc_input, rev=bad_rev, check_rev=True)
+        assert err.value.error_code == 1200
 
-    # Test has with bad revision
-    with pytest.raises(DocumentRevisionError) as err:
-        col.has(doc, rev=bad_rev, check_rev=True)
-    assert 'precondition failed' in str(err.value)
+        assert doc_input in col
+        assert col.has(doc_input, rev=rev, check_rev=True) is True
+        assert col.has(doc_input, rev=rev, check_rev=False) is True
+        assert col.has(doc_input, rev=bad_rev, check_rev=False) is True
 
-    # Test has with bad credentials
-    with pytest.raises(DocumentInError):
-        bad_col.has(doc['_key'])
+    # Test missing documents
+    for doc_input in [
+        missing_doc_key,
+        missing_doc_id,
+        {'_key': missing_doc_key},
+        {'_id': missing_doc_id},
+        {'_id': missing_doc_id, '_key': missing_doc_key},
+        {'_key': missing_doc_key, '_rev': rev},
+        {'_id': missing_doc_id, '_rev': rev},
+        {'_id': missing_doc_id, '_key': missing_doc_key, '_rev': rev},
+    ]:
+        assert doc_input not in col
+        assert col.has(doc_input) is False
+        assert col.has(doc_input, rev=rev) is False
+        assert col.has(doc_input, rev=rev, check_rev=True) is False
+        assert col.has(doc_input, rev=rev, check_rev=False) is False
 
-    # Test has with bad credentials
-    with pytest.raises(DocumentInError):
-        _ = doc in bad_col
+    # Test documents with IDs with wrong collection name
+    expected_error_msg = 'bad collection name'
+    bad_id = generate_col_name() + '/' + doc_key
+    for doc_input in [
+        bad_id,
+        {'_id': bad_id},
+        {'_id': bad_id, '_rev': rev},
+        {'_id': bad_id, '_rev': bad_rev},
+        {'_id': bad_id, '_key': doc_key},
+        {'_id': bad_id, '_key': doc_key, '_rev': rev},
+        {'_id': bad_id, '_key': doc_key, '_rev': bad_rev},
+    ]:
+        with assert_raises(DocumentParseError) as err:
+            col.has(doc_input, check_rev=True)
+        assert expected_error_msg in str(err.value)
+
+        with assert_raises(DocumentParseError) as err:
+            col.has(doc_input, check_rev=False)
+        assert expected_error_msg in str(err.value)
+
+        with assert_raises(DocumentParseError) as err:
+            col.has(doc_input, rev=rev, check_rev=True)
+        assert expected_error_msg in str(err.value)
+
+        with assert_raises(DocumentParseError) as err:
+            col.has(doc_input, rev=rev, check_rev=False)
+        assert expected_error_msg in str(err.value)
+
+    # Test documents with missing "_id" and "_key" fields
+    expected_error_msg = 'field "_key" or "_id" required'
+    for doc_input in [
+        {},
+        {'foo': 'bar'},
+        {'foo': 'bar', '_rev': rev},
+        {'foo': 'bar', '_rev': bad_rev},
+    ]:
+        with assert_raises(DocumentParseError) as err:
+            col.has(doc_input, check_rev=True)
+        assert str(err.value) == expected_error_msg
+
+        with assert_raises(DocumentParseError) as err:
+            col.has(doc_input, check_rev=False)
+        assert str(err.value) == expected_error_msg
+
+        with assert_raises(DocumentParseError) as err:
+            col.has(doc_input, rev=rev, check_rev=True)
+        assert str(err.value) == expected_error_msg
+
+        with assert_raises(DocumentParseError) as err:
+            col.has(doc_input, rev=rev, check_rev=False)
+        assert str(err.value) == expected_error_msg
+
+    # Test get with bad database
+    with assert_raises(DocumentInError) as err:
+        bad_col.has(doc_key)
+    assert err.value.error_code == 1228
+
+    # Test contains with bad database
+    with assert_raises(DocumentInError) as err:
+        _ = doc_key in bad_col
+    assert err.value.error_code == 1228
 
 
 def test_document_get(col, bad_col, docs):
@@ -959,7 +1366,7 @@ def test_document_get(col, bad_col, docs):
     assert result['val'] == doc_val
 
     # Test get missing document
-    assert col.get(generate_document_key()) is None
+    assert col.get(generate_doc_key()) is None
 
     # Test get with correct revision
     good_rev = col[doc_key]['_rev']
@@ -969,9 +1376,9 @@ def test_document_get(col, bad_col, docs):
 
     # Test get with invalid revision
     bad_rev = col[doc_key]['_rev'] + '0'
-    with pytest.raises(DocumentRevisionError) as err:
+    with assert_raises(DocumentRevisionError) as err:
         col.get(doc_key, rev=bad_rev, check_rev=True)
-    assert 'precondition failed' in str(err.value)
+    assert err.value.error_code == 1200
 
     # Test get with correct revision and check_rev turned off
     result = col.get(doc, rev=bad_rev, check_rev=False)
@@ -979,13 +1386,15 @@ def test_document_get(col, bad_col, docs):
     assert result['_rev'] != bad_rev
     assert result['val'] == doc_val
 
-    # Test get with bad credentials
-    with pytest.raises(DocumentGetError):
+    # Test get with bad database
+    with assert_raises(DocumentGetError) as err:
         bad_col.get(doc['_key'])
+    assert err.value.error_code == 1228
 
-    # Test get with bad credentials
-    with pytest.raises(DocumentGetError):
+    # Test get with bad database
+    with assert_raises(DocumentGetError) as err:
         _ = bad_col[doc['_key']]
+    assert err.value.error_code == 1228
 
 
 def test_document_get_many(col, bad_col, docs):
@@ -993,15 +1402,15 @@ def test_document_get_many(col, bad_col, docs):
     col.import_bulk(docs)
 
     # Test get_many missing documents
-    assert col.get_many([generate_document_key()]) == []
+    assert col.get_many([generate_doc_key()]) == []
 
     # Test get_many existing documents
     result = col.get_many(docs[:1])
-    result = clean(result)
+    result = clean_doc(result)
     assert result == docs[:1]
 
     result = col.get_many(docs)
-    assert clean(result) == docs
+    assert clean_doc(result) == docs
 
     # Test get_many in empty collection
     col.truncate()
@@ -1009,8 +1418,9 @@ def test_document_get_many(col, bad_col, docs):
     assert col.get_many(docs[:1]) == []
     assert col.get_many(docs[:3]) == []
 
-    with pytest.raises(DocumentGetError):
+    with assert_raises(DocumentGetError) as err:
         bad_col.get_many(docs)
+    assert err.value.error_code == 1228
 
 
 def test_document_all(col, bad_col, docs):
@@ -1020,52 +1430,53 @@ def test_document_all(col, bad_col, docs):
     # Test all with default options
     cursor = col.all()
     result = list(cursor)
-    assert clean(result) == docs
+    assert clean_doc(result) == docs
 
     # Test all with a skip of 0
     cursor = col.all(skip=0)
     result = list(cursor)
     assert cursor.count == len(docs)
-    assert clean(result) == docs
+    assert clean_doc(result) == docs
 
     # Test all with a skip of 1
     cursor = col.all(skip=1)
     result = list(cursor)
     assert cursor.count == len(result) == 5
-    assert all([clean(d) in docs for d in result])
+    assert all([clean_doc(d) in docs for d in result])
 
     # Test all with a skip of 3
     cursor = col.all(skip=3)
     result = list(cursor)
     assert cursor.count == len(result) == 3
-    assert all([clean(d) in docs for d in result])
+    assert all([clean_doc(d) in docs for d in result])
 
     # Test all with a limit of 0
     cursor = col.all(limit=0)
     result = list(cursor)
-    assert cursor.count == len(result) == 0
+    assert cursor.count == len(result) == 6
 
     # Test all with a limit of 1
     cursor = col.all(limit=1)
     result = list(cursor)
     assert cursor.count == len(result) == 1
-    assert all([clean(d) in docs for d in result])
+    assert all([clean_doc(d) in docs for d in result])
 
     # Test all with a limit of 3
     cursor = col.all(limit=3)
     result = list(cursor)
     assert cursor.count == len(result) == 3
-    assert all([clean(d) in docs for d in result])
+    assert all([clean_doc(d) in docs for d in result])
 
     # Test all with skip and limit
     cursor = col.all(skip=5, limit=2)
     result = list(cursor)
     assert cursor.count == len(result) == 1
-    assert all([clean(d) in docs for d in result])
+    assert all([clean_doc(d) in docs for d in result])
 
-    # Test export with bad credentials
-    with pytest.raises(DocumentGetError):
+    # Test export with bad database
+    with assert_raises(DocumentGetError) as err:
         bad_col.all()
+    assert err.value.error_code == 1228
 
 
 def test_document_ids(col, bad_col, docs):
@@ -1079,9 +1490,10 @@ def test_document_ids(col, bad_col, docs):
     ids = set('{}/{}'.format(col.name, d['_key']) for d in docs)
     assert set(result) == ids
 
-    # Test ids with bad credentials
-    with pytest.raises(DocumentIDsError):
+    # Test ids with bad database
+    with assert_raises(DocumentIDsError) as err:
         bad_col.ids()
+    assert err.value.error_code == 1228
 
 
 def test_document_keys(col, bad_col, docs):
@@ -1095,9 +1507,10 @@ def test_document_keys(col, bad_col, docs):
     assert len(result) == len(docs)
     assert sorted(result) == extract('_key', docs)
 
-    # Test keys with bad credentials
-    with pytest.raises(DocumentKeysError):
+    # Test keys with bad database
+    with assert_raises(DocumentKeysError) as err:
         bad_col.keys()
+    assert err.value.error_code == 1228
 
 
 def test_document_export(col, bad_col, docs):
@@ -1107,26 +1520,25 @@ def test_document_export(col, bad_col, docs):
     # Test export with default options
     cursor = col.export()
     assert cursor.type == 'export'
-    assert clean(cursor) == docs
 
     # Test export with flush
     cursor = col.export(flush=True, flush_wait=1)
-    assert clean(cursor) == docs
+    assert clean_doc(cursor) == docs
 
     # Test export with count
     cursor = col.export(count=True)
     assert cursor.count == len(docs)
-    assert clean(cursor) == docs
+    assert clean_doc(cursor) == docs
 
     # Test export with batch size
     cursor = col.export(count=True, batch_size=1)
     assert cursor.count == len(docs)
-    assert clean(cursor) == docs
+    assert clean_doc(cursor) == docs
 
     # Test export with time-to-live
     cursor = col.export(count=True, ttl=10)
     assert cursor.count == len(docs)
-    assert clean(cursor) == docs
+    assert clean_doc(cursor) == docs
 
     # Test export with filters
     cursor = col.export(
@@ -1140,22 +1552,22 @@ def test_document_export(col, bad_col, docs):
     # Test export with a limit of 0
     cursor = col.export(count=True, limit=0)
     assert cursor.count == len(docs)
-    assert clean(cursor) == docs
+    assert clean_doc(cursor) == docs
 
     # Test export with a limit of 1
     cursor = col.export(count=True, limit=1)
     assert cursor.count == 1
     assert len(list(cursor)) == 1
-    all([clean(d) in docs for d in cursor])
+    all([clean_doc(d) in docs for d in cursor])
 
     # Test export with a limit of 3
     cursor = col.export(count=True, limit=3)
     assert cursor.count == 3
     assert len(list(cursor)) == 3
-    all([clean(d) in docs for d in cursor])
+    all([clean_doc(d) in docs for d in cursor])
 
-    # Test export with bad credentials
-    with pytest.raises(DocumentGetError):
+    # Test export with bad database
+    with assert_raises(DocumentGetError):
         bad_col.export()
 
     # Test closing export cursor
@@ -1163,10 +1575,10 @@ def test_document_export(col, bad_col, docs):
     assert cursor.close(ignore_missing=False) is True
     assert cursor.close(ignore_missing=True) is False
 
-    assert clean(cursor.next()) in docs
-    with pytest.raises(CursorNextError):
+    assert clean_doc(cursor.next()) in docs
+    with assert_raises(CursorNextError):
         cursor.next()
-    with pytest.raises(CursorCloseError):
+    with assert_raises(CursorCloseError):
         cursor.close(ignore_missing=False)
 
     cursor = col.export(count=True)
@@ -1180,7 +1592,7 @@ def test_document_random(col, bad_col, docs):
     # Test random in non-empty collection
     for attempt in range(10):
         random_doc = col.random()
-        assert clean(random_doc) in docs
+        assert clean_doc(random_doc) in docs
 
     # Test random in empty collection
     col.truncate()
@@ -1188,9 +1600,10 @@ def test_document_random(col, bad_col, docs):
         random_doc = col.random()
         assert random_doc is None
 
-    # Test random with bad credentials
-    with pytest.raises(DocumentGetError):
+    # Test random with bad database
+    with assert_raises(DocumentGetError) as err:
         bad_col.random()
+    assert err.value.error_code == 1228
 
 
 def test_document_import_bulk(col, bad_col, docs):
@@ -1226,7 +1639,7 @@ def test_document_import_bulk(col, bad_col, docs):
         assert col[doc_key]['loc'] == doc['loc']
 
     # Test import_bulk duplicates with halt_on_error
-    with pytest.raises(DocumentInsertError):
+    with assert_raises(DocumentInsertError):
         col.import_bulk(docs, halt_on_error=True)
 
     # Test import bulk duplicates without halt_on_error
@@ -1238,8 +1651,8 @@ def test_document_import_bulk(col, bad_col, docs):
     assert result['ignored'] == 0
     col.truncate()
 
-    # Test import bulk with bad credentials
-    with pytest.raises(DocumentInsertError):
+    # Test import bulk with bad database
+    with assert_raises(DocumentInsertError):
         bad_col.import_bulk(docs, halt_on_error=True)
     assert len(col) == 0
 
@@ -1316,7 +1729,7 @@ def test_document_edge(lecol, docs, edocs):
     ecol = lecol  # legacy edge collection
 
     # Test insert edge without "_from" and "_to" fields
-    with pytest.raises(DocumentInsertError):
+    with assert_raises(DocumentInsertError):
         ecol.insert(docs[0])
 
     # Test insert many edges without "_from" and "_to" fields
@@ -1324,7 +1737,7 @@ def test_document_edge(lecol, docs, edocs):
         assert isinstance(result, DocumentInsertError)
 
     # Test update edge without "_from" and "_to" fields
-    with pytest.raises(DocumentUpdateError):
+    with assert_raises(DocumentUpdateError):
         ecol.update(docs[0])
 
     # Test update many edges without "_from" and "_to" fields
@@ -1332,7 +1745,7 @@ def test_document_edge(lecol, docs, edocs):
         assert isinstance(result, DocumentUpdateError)
 
     # Test replace edge without "_from" and "_to" fields
-    with pytest.raises(DocumentReplaceError):
+    with assert_raises(DocumentReplaceError):
         ecol.replace(docs[0])
 
     # Test replace many edges without "_from" and "_to" fields
@@ -1467,3 +1880,130 @@ def test_document_edge(lecol, docs, edocs):
     for edoc in ecol:
         assert edoc['_from'] == 'from/foo'
         assert edoc['_to'] == 'to/bar'
+
+
+def test_document_management_via_db(db, col):
+    doc1 = {'_key': 'foo'}
+    doc2 = {'_key': 'bar'}
+    doc3 = {'_key': 'baz'}
+
+    doc1_id = col.name + '/foo'
+    doc2_id = col.name + '/bar'
+    doc3_id = col.name + '/baz'
+    doc_ids = [doc1_id, doc2_id, doc3_id]
+
+    # Test document insert
+    result = db.insert_document(col.name, doc1)
+    assert result['_key'] == 'foo'
+    assert result['_id'] == doc1_id
+    assert len(col) == 1
+
+    # Test document insert many
+    result = db.insert_documents(col.name, [doc2, doc3])
+    assert result[0]['_key'] == 'bar'
+    assert result[0]['_id'] == doc2_id
+    assert result[1]['_key'] == 'baz'
+    assert result[1]['_id'] == doc3_id
+    assert len(col) == 3
+
+    # Test document get with bad input
+    with assert_raises(DocumentParseError) as err:
+        db.document(doc1)
+    assert str(err.value) == 'field "_id" required'
+
+    # Test document get with bad input
+    with assert_raises(DocumentParseError) as err:
+        db.documents([])
+    assert str(err.value) == 'got empty list of documents'
+
+    # Test document get
+    for doc_id in doc_ids:
+        result = db.document(doc_id)
+        assert '_rev' in result
+        assert '_key' in result
+        assert result['_id'] == doc_id
+
+    # Test document get many
+    expected = clean_doc(col.get_many(doc_ids))
+    assert clean_doc(db.documents(doc_ids)) == expected
+
+    # Test document update with bad input
+    with assert_raises(DocumentParseError) as err:
+        db.update_document(doc1)
+    assert str(err.value) == 'field "_id" required'
+
+    # Test document update
+    result = db.update_document({'_id': doc1_id, 'val': 100})
+    assert result['_id'] == doc1_id
+    assert col[doc1_id]['val'] == 100
+    assert len(col) == 3
+
+    # Test document update many
+    result = db.update_documents([
+        {'_id': doc2_id, 'val': 200},
+        {'_id': doc3_id, 'val': 300}
+    ])
+    assert result[0]['_id'] == col[doc2_id]['_id'] == doc2_id
+    assert result[1]['_id'] == col[doc3_id]['_id'] == doc3_id
+    assert col[doc2_id]['val'] == 200
+    assert col[doc3_id]['val'] == 300
+    assert len(col) == 3
+
+    # Test document update many with bad input
+    with assert_raises(DocumentParseError) as err:
+        db.update_documents([])
+    assert str(err.value) == 'got empty list of documents'
+
+    # Test document replace with bad input
+    with assert_raises(DocumentParseError) as err:
+        db.replace_document(doc1)
+    assert str(err.value) == 'field "_id" required'
+
+    # Test document replace
+    result = db.replace_document({'_id': doc1_id, 'num': 300})
+    assert result['_id'] == doc1_id
+    assert 'val' not in col[doc1_id]
+    assert col[doc1_id]['num'] == 300
+    assert len(col) == 3
+
+    # Test document replace many
+    result = db.replace_documents([
+        {'_id': doc2_id, 'num': 100},
+        {'_id': doc3_id, 'num': 200}
+    ])
+    assert result[0]['_id'] == col['bar']['_id'] == doc2_id
+    assert result[1]['_id'] == col['baz']['_id'] == doc3_id
+    assert 'val' not in col[doc2_id]
+    assert 'val' not in col[doc3_id]
+    assert col[doc2_id]['num'] == 100
+    assert col[doc3_id]['num'] == 200
+    assert len(col) == 3
+
+    # Test document replace many with bad input
+    with assert_raises(DocumentParseError) as err:
+        db.replace_documents([])
+    assert str(err.value) == 'got empty list of documents'
+
+    # Test document delete
+    result = db.delete_document({'_id': doc1_id})
+    assert result['_id'] == doc1_id
+    assert doc1_id not in col
+    assert len(col) == 2
+
+    # Test document delete many
+    result = db.delete_documents([
+        doc1_id,
+        doc2_id,
+        {'_id': doc3_id},
+    ])
+    assert isinstance(result[0], DocumentDeleteError)
+    assert result[1]['_id'] == doc2_id
+    assert result[2]['_id'] == doc3_id
+    assert doc2_id not in col
+    assert doc3_id not in col
+    assert len(col) == 0
+
+    # Test document delete many with bad input
+    with assert_raises(DocumentParseError) as err:
+        db.delete_documents([])
+    assert str(err.value) == 'got empty list of documents'

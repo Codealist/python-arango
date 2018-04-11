@@ -4,10 +4,9 @@ __all__ = ['ArangoClient']
 
 import requests
 
-from arango.exceptions import ServerConnectionError
-from arango.api import APIExecutor
 from arango.connection import Connection
-from arango.database import Database
+from arango.database import DefaultDatabase
+from arango.exceptions import ServerConnectionError
 from arango.version import __version__
 
 
@@ -15,17 +14,19 @@ class ArangoClient(object):
     """ArangoDB client.
 
     :param protocol: Internet transfer protocol (default: "http").
-    :type protocol: str or unicode
+    :type protocol: str | unicode
     :param host: ArangoDB host (default: "127.0.0.1").
-    :type host: str or unicode
+    :type host: str | unicode
     :param port: ArangoDB port (default: 8529).
     :type port: int
-    :param session: Custom requests session object. If not provided, session
-        with default settings (i.e. requests.Session()) is used.
+    :param session: User-defined requests_ session object. If not provided,
+        session with default settings is used (i.e. requests.Session()).
     :type session: requests.Session
     :param request_kwargs: Additional keyword arguments passed into the
-        session object when sending an HTTP request.
+        requests_ session object when sending an HTTP request to ArangoDB.
     :type request_kwargs: dict.
+
+    .. _requests: https://github.com/requests/requests
     """
 
     def __init__(self,
@@ -49,16 +50,16 @@ class ArangoClient(object):
         """Return the client version.
 
         :return: Client version.
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return __version__
 
     @property
     def protocol(self):
-        """Return the internet transfer protocol.
+        """Return the internet transfer protocol (e.g. "http").
 
         :return: Internet transfer protocol.
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return self._protocol
 
@@ -67,7 +68,7 @@ class ArangoClient(object):
         """Return the ArangoDB host.
 
         :return: ArangoDB host.
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return self._host
 
@@ -81,11 +82,20 @@ class ArangoClient(object):
         return self._port
 
     @property
+    def url(self):
+        """Return the ArangoDB URL.
+
+        :return: ArangoDB URL.
+        :rtype: str | unicode
+        """
+        return self._url
+
+    @property
     def session(self):
         """Return the requests session.
 
         :return: Requests session.
-        :rtype: requests.Session or None
+        :rtype: requests.Session
         """
         return self._session
 
@@ -102,15 +112,15 @@ class ArangoClient(object):
         """Connect to a database and return the database API wrapper.
 
         :param name: Database name.
-        :type name: str or unicode
+        :type name: str | unicode
         :param username: Username for basic authentication.
-        :type username: str or unicode
+        :type username: str | unicode
         :param password: Password for basic authentication.
-        :type password: str or unicode
-        :param verify: Verify the connection on initialization.
+        :type password: str | unicode
+        :param verify: Verify the connection on initialization of the wrapper.
         :type verify: bool
         :return: Database wrapper.
-        :rtype: arango.database.Database
+        :rtype: arango.database.DefaultDatabase
         """
         connection = Connection(
             url=self._url,
@@ -120,16 +130,14 @@ class ArangoClient(object):
             session=self._session,
             request_kwargs=self._request_kwargs
         )
-        executor = APIExecutor()
-        database = Database(connection, executor)
+        database = DefaultDatabase(connection)
 
-        if verify:
+        if verify:  # Check the server connection by making a read API call
             try:
                 database.ping()
             except ServerConnectionError as err:
                 raise err
             except Exception as err:
-                raise ServerConnectionError(
-                    message='bad connection: {}'.format(err))
+                raise ServerConnectionError('bad connection: {}'.format(err))
 
         return database

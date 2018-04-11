@@ -1,26 +1,28 @@
-import pytest
-
 from arango.exceptions import (
     CollectionCreateError,
     CollectionListError,
-    PermissionDeleteError,
+    CollectionPropertiesError,
+    DocumentInsertError,
+    PermissionClearError,
     PermissionGetError,
     PermissionUpdateError,
 )
-from tests.utils import (
-    generate_username,
-    generate_collection_name,
+from tests.helpers import (
+    assert_raises,
+    extract,
+    generate_col_name,
+    generate_db_name,
     generate_string,
-    generate_database_name,
-    extract
+    generate_username
 )
+
 
 def test_permission_management(client, sys_db, bad_db):
     username = generate_username()
     password = generate_string()
-    db_name = generate_database_name()
-    col_name_1 = generate_collection_name()
-    col_name_2 = generate_collection_name()
+    db_name = generate_db_name()
+    col_name_1 = generate_col_name()
+    col_name_2 = generate_col_name()
 
     sys_db.create_database(
         name=db_name,
@@ -33,61 +35,103 @@ def test_permission_management(client, sys_db, bad_db):
     db = client.db(db_name, username, password)
     assert isinstance(sys_db.permissions(username), dict)
 
-    # Test permissions get with bad credentials
-    with pytest.raises(PermissionGetError):
+    # Test list permissions with bad database
+    with assert_raises(PermissionGetError) as err:
         bad_db.permissions(username)
+    assert err.value.error_code == 1228
 
-    # Test permission get with bad credentials
-    with pytest.raises(PermissionGetError):
+    # Test get permission with bad database
+    with assert_raises(PermissionGetError) as err:
         bad_db.permission(username, db_name)
+    assert err.value.error_code == 1228
 
     # The user should have read and write permissions
     assert sys_db.permission(username, db_name) == 'rw'
-    db.create_collection(col_name_1)
-    assert col_name_1 in extract('name', db.collections())
     assert sys_db.permission(username, db_name, col_name_1) == 'rw'
+    assert db.create_collection(col_name_1) is not None
+    assert col_name_1 in extract('name', db.collections())
 
-    # Update user permission to none and try again
+    # Test update permission (database level) to none and verify access
     assert sys_db.update_permission(username, 'none', db_name) is True
     assert sys_db.permission(username, db_name) == 'none'
-
-    with pytest.raises(CollectionCreateError) as err:
-        db.create_collection(col_name_1)
-    assert err.value.http_code in {401, 403}
-
-    with pytest.raises(CollectionListError) as err:
+    with assert_raises(CollectionCreateError) as err:
+        db.create_collection(col_name_2)
+    assert err.value.http_code == 401
+    with assert_raises(CollectionListError) as err:
         db.collections()
-    assert err.value.http_code in {401, 403}
+    assert err.value.http_code == 401
 
-    # Test permission update with bad credentials
-    with pytest.raises(PermissionUpdateError):
+    # Test update permission (database level) with bad database
+    with assert_raises(PermissionUpdateError):
         bad_db.update_permission(username, 'ro', db_name)
     assert sys_db.permission(username, db_name) == 'none'
 
-    # Update user permission to read only and try again
+    # Test update permission (database level) to read only and verify access
     assert sys_db.update_permission(username, 'ro', db_name) is True
     assert sys_db.permission(username, db_name) == 'ro'
-
-    with pytest.raises(CollectionCreateError) as err:
+    with assert_raises(CollectionCreateError) as err:
         db.create_collection(col_name_2)
-    assert err.value.http_code in {401, 403}
-
+    assert err.value.http_code == 403
     assert col_name_1 in extract('name', db.collections())
     assert col_name_2 not in extract('name', db.collections())
 
-    # Test permission delete with bad credentials
-    with pytest.raises(PermissionDeleteError):
-        bad_db.delete_permission(username, '', db_name)
+    # Test delete permission (database level) with bad database
+    with assert_raises(PermissionClearError) as err:
+        bad_db.clear_permission(username, db_name)
+    assert err.value.error_code == 1228
     assert sys_db.permission(username, db_name) == 'ro'
 
-    # Delete user permission and try again
-    assert sys_db.delete_permission(username, db_name) is True
+    # Test delete permission (database level) and verify access
+    assert sys_db.clear_permission(username, db_name) is True
     assert sys_db.permission(username, db_name) == 'none'
-
-    with pytest.raises(CollectionCreateError) as err:
+    with assert_raises(CollectionCreateError) as err:
         db.create_collection(col_name_1)
-    assert err.value.http_code in {401, 403}
-
-    with pytest.raises(CollectionListError) as err:
+    assert err.value.http_code == 401
+    with assert_raises(CollectionListError) as err:
         db.collections()
-    assert err.value.http_code in {401, 403}
+    assert err.value.http_code == 401
+
+    # Test update permission (database level) and verify access
+    assert sys_db.update_permission(username, 'rw', db_name) is True
+    assert sys_db.permission(username, db_name, col_name_2) == 'rw'
+    assert db.create_collection(col_name_2) is not None
+    assert col_name_2 in extract('name', db.collections())
+
+    col_1 = db.collection(col_name_1)
+    col_2 = db.collection(col_name_2)
+
+    # Verify that user has read and write access to both collections
+    assert isinstance(col_1.properties(), dict)
+    assert isinstance(col_1.insert({}), dict)
+    assert isinstance(col_2.properties(), dict)
+    assert isinstance(col_2.insert({}), dict)
+
+    # Test update permission (collection level) to read only and verify access
+    assert sys_db.update_permission(username, 'ro', db_name, col_name_1)
+    assert sys_db.permission(username, db_name, col_name_1) == 'ro'
+    assert isinstance(col_1.properties(), dict)
+    with assert_raises(DocumentInsertError) as err:
+        col_1.insert({})
+    assert err.value.http_code == 403
+    assert isinstance(col_2.properties(), dict)
+    assert isinstance(col_2.insert({}), dict)
+
+    # Test update permission (collection level) to none and verify access
+    assert sys_db.update_permission(username, 'none', db_name, col_name_1)
+    assert sys_db.permission(username, db_name, col_name_1) == 'none'
+    with assert_raises(CollectionPropertiesError) as err:
+        col_1.properties()
+    assert err.value.http_code == 403
+    with assert_raises(DocumentInsertError) as err:
+        col_1.insert({})
+    assert err.value.http_code == 403
+    assert isinstance(col_2.properties(), dict)
+    assert isinstance(col_2.insert({}), dict)
+
+    # Test clear permission (collection level)
+    assert sys_db.clear_permission(username, db_name, col_name_1) is True
+    assert sys_db.permission(username, db_name, col_name_1) == 'rw'
+    assert isinstance(col_1.properties(), dict)
+    assert isinstance(col_1.insert({}), dict)
+    assert isinstance(col_2.properties(), dict)
+    assert isinstance(col_2.insert({}), dict)

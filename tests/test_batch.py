@@ -4,157 +4,155 @@ import mock
 import pytest
 from six import string_types
 
-from arango.database import Database
+from arango.database import BatchDatabase
 from arango.exceptions import (
-    DocumentRevisionError,
     DocumentInsertError,
     BatchExecuteError,
     BatchJobResultError,
-    BatchBadStateError
+    BatchStateError
 )
-from tests.utils import extract
+from arango.job import BatchJob
+from tests.helpers import extract, clean_doc
 
 
-# noinspection PyUnresolvedReferences
-def test_batch_attributes(db, col, docs):
-    with db.begin_batch() as batch:
-        assert isinstance(batch.id, string_types)
-        assert isinstance(batch.db, Database)
-        assert batch.db.context == 'batch'
-        assert batch.jobs == []
-        assert batch.status == 'pending'
-        job = batch.db.collection(col.name).insert_many(docs)
+def test_batch_wrapper_attributes(db, col, username):
+    batch_db = db.begin_batch()
+    assert isinstance(batch_db, BatchDatabase)
+    assert batch_db.username == username
+    assert batch_db.context == 'batch'
+    assert batch_db.db_name == db.name
+    assert batch_db.name == db.name
+    assert repr(batch_db) == '<BatchDatabase {}>'.format(db.name)
 
-    assert batch.jobs == [job]
-    assert batch.status == 'done'
-    assert '<Batch {}>'.format(batch.id) == repr(batch)
-    assert '<BatchJob {}>'.format(job.id) == repr(job)
-    assert extract('_key', col.all()) == extract('_key', docs)
+    batch_col = batch_db.collection(col.name)
+    assert batch_col.username == username
+    assert batch_col.context == 'batch'
+    assert batch_col.db_name == db.name
+    assert batch_col.name == col.name
+
+    batch_aql = batch_db.aql
+    assert batch_aql.username == username
+    assert batch_aql.context == 'batch'
+    assert batch_aql.db_name == db.name
+
+    job = batch_aql.execute('INVALID QUERY')
+    assert isinstance(job, BatchJob)
+    assert isinstance(job.id, string_types)
+    assert repr(job) == '<BatchJob {}>'.format(job.id)
 
 
 def test_batch_execute_without_result(db, col, docs):
-    with db.begin_batch(return_result=False) as batch:
-        batch_col = batch.db.collection(col.name)
+    with db.begin_batch(return_result=False) as batch_db:
+        batch_col = batch_db.collection(col.name)
+
+        # Ensure that no jobs are returned
         assert batch_col.insert(docs[0]) is None
         assert batch_col.delete(docs[0]) is None
         assert batch_col.insert(docs[1]) is None
         assert batch_col.delete(docs[1]) is None
         assert batch_col.insert(docs[2]) is None
+        assert batch_col.get(docs[2]) is None
+        assert batch_db.queued_jobs() is None
 
-    assert batch.jobs is None
-    assert batch.status == 'done'
-    assert extract('_key', col.all()) == extract('_key', [docs[2]])
+    # Ensure that the operations went through
+    assert batch_db.queued_jobs() is None
+    assert extract('_key', col.all()) == [docs[2]['_key']]
 
 
 def test_batch_execute_with_result(db, col, docs):
-    with db.begin_batch(return_result=True) as batch:
-        batch_col = batch.db.collection(col.name)
+    with db.begin_batch(return_result=True) as batch_db:
+        batch_col = batch_db.collection(col.name)
         job1 = batch_col.insert(docs[0])
         job2 = batch_col.insert(docs[1])
         job3 = batch_col.insert(docs[1])  # duplicate
-        job4 = batch_col.get(document=docs[1], rev='9999')
+        jobs = batch_db.queued_jobs()
+        assert jobs == [job1, job2, job3]
+        assert all(job.status() == 'pending' for job in jobs)
 
-    assert batch.jobs == [job1, job2, job3, job4]
-    assert batch.status == 'done'
-
+    assert batch_db.queued_jobs() == [job1, job2, job3]
+    assert all(job.status() == 'done' for job in batch_db.queued_jobs())
     assert extract('_key', col.all()) == extract('_key', docs[:2])
 
-    # Test get successful results
-    assert job1.status == 'done'
+    # Test successful results
     assert job1.result()['_key'] == docs[0]['_key']
-    assert job2.status == 'done'
     assert job2.result()['_key'] == docs[1]['_key']
 
-    # Test get insert error with raise_errors on and off
-    assert job3.status == 'done'
-    with pytest.raises(DocumentInsertError):
-        job3.result(raise_errors=True)
-    assert isinstance(job3.result(), DocumentInsertError)
-
-    # Test get revision error with raise_errors on and off
-    assert job4.status == 'done'
-    with pytest.raises(DocumentRevisionError):
-        job4.result(raise_errors=True)
-    assert isinstance(job4.result(), DocumentRevisionError)
+    # Test insert error result
+    with pytest.raises(DocumentInsertError) as err:
+        job3.result()
+    assert err.value.error_code == 1210
 
 
 def test_batch_empty_commit(db):
-    batch = db.begin_batch()
-    assert batch.status == 'pending'
+    batch_db = db.begin_batch(return_result=False)
+    assert batch_db.commit() is None
 
-    assert list(batch.commit()) == []
-    assert batch.status == 'done'
+    batch_db = db.begin_batch(return_result=True)
+    assert batch_db.commit() == []
 
 
-def test_batch_double_commit(db, col):
-    batch = db.begin_batch()
-    batch.db.collection(col.name).insert({})
-    assert batch.status == 'pending'
+def test_batch_double_commit(db, col, docs):
+    batch_db = db.begin_batch()
+    job = batch_db.collection(col.name).insert(docs[0])
 
     # Test first commit
-    batch.commit()
-    assert batch.status == 'done'
+    assert batch_db.commit() == [job]
+    assert job.status() == 'done'
     assert len(col) == 1
-    random_doc = col.random()
+    assert clean_doc(col.random()) == docs[0]
 
     # Test second commit which should fail
-    with pytest.raises(BatchBadStateError) as err:
-        batch.commit()
-    assert batch.status == 'done'
+    with pytest.raises(BatchStateError) as err:
+        batch_db.commit()
+    assert 'already committed' in str(err.value)
     assert len(col) == 1
-    assert col.random() == random_doc
-    assert 'committed already' in str(err.value)
+    assert clean_doc(col.random()) == docs[0]
 
 
 def test_batch_action_after_commit(db, col):
-    with db.begin_batch() as batch:
-        batch.db.collection(col.name).insert({})
+    with db.begin_batch() as batch_db:
+        batch_db.collection(col.name).insert({})
 
     # Test insert after the batch has been committed
-    with pytest.raises(BatchBadStateError) as err:
-        batch.db.collection(col.name).insert({})
-    assert 'committed already' in str(err.value)
+    with pytest.raises(BatchStateError) as err:
+        batch_db.collection(col.name).insert({})
+    assert 'already committed' in str(err.value)
     assert len(col) == 1
-    assert batch.status == 'done'
 
 
 def test_batch_execute_error(bad_db, col, docs):
-    batch = bad_db.begin_batch(return_result=True)
-    batch.db.collection(col.name).insert_many(docs)
-    assert batch.status == 'pending'
+    batch_db = bad_db.begin_batch(return_result=True)
+    job = batch_db.collection(col.name).insert_many(docs)
 
-    # Test batch execute with bad credentials
-    with pytest.raises(BatchExecuteError):
-        batch.commit()
+    # Test batch execute with bad database
+    with pytest.raises(BatchExecuteError) as err:
+        batch_db.commit()
+    assert err.value.error_code == 1228
     assert len(col) == 0
-    assert batch.status == 'done'
+    assert job.status() == 'pending'
 
 
 def test_batch_job_result_not_ready(db, col, docs):
-    batch = db.begin_batch(return_result=True)
-    job = batch.db.collection(col.name).insert_many(docs)
-    assert batch.status == 'pending'
+    batch_db = db.begin_batch(return_result=True)
+    job = batch_db.collection(col.name).insert_many(docs)
 
-    # Test get job result before commit with raise_errors set to True
-    with pytest.raises(BatchJobResultError):
-        job.result(raise_errors=True)
-
-    # Test get job result before commit with raise_errors set to False
-    with pytest.raises(BatchJobResultError):
-        job.result(raise_errors=False)
+    # Test get job result before commit
+    with pytest.raises(BatchJobResultError) as err:
+        job.result()
+    assert str(err.value) == 'result not available yet'
 
     # Test commit to make sure it still works after the errors
-    assert list(batch.commit()) == [job]
+    assert batch_db.commit() == [job]
     assert len(job.result()) == len(docs)
     assert extract('_key', col.all()) == extract('_key', docs)
 
 
 def test_batch_bad_state(db, col, docs):
-    batch = db.begin_batch()
-    batch_col = batch.db.collection(col.name)
+    batch_db = db.begin_batch()
+    batch_col = batch_db.collection(col.name)
     batch_col.insert(docs[0])
     batch_col.insert(docs[1])
-    batch_col.insert(docs[1])
+    batch_col.insert(docs[2])
 
     # Monkey patch the connection object
     mock_resp = mock.MagicMock()
@@ -164,10 +162,9 @@ def test_batch_bad_state(db, col, docs):
     mock_send_request.return_value = mock_resp
     mock_connection = mock.MagicMock()
     mock_connection.send_request = mock_send_request
-    batch._conn = mock_connection
+    batch_db._executor._conn = mock_connection
 
     # Test commit with invalid batch state
-    with pytest.raises(BatchBadStateError) as err:
-        batch.commit()
-    assert batch.status == 'done'
+    with pytest.raises(BatchStateError) as err:
+        batch_db.commit()
     assert 'expecting 3 parts in batch response but got 0' in str(err.value)

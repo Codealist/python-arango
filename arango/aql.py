@@ -1,5 +1,9 @@
 from __future__ import absolute_import, unicode_literals
 
+from json import dumps
+
+__all__ = ['AQL', 'AQLQueryCache']
+
 from arango.api import APIWrapper
 from arango.cursor import Cursor
 from arango.exceptions import (
@@ -12,18 +16,22 @@ from arango.exceptions import (
     AQLCacheClearError,
     AQLCacheConfigureError,
     AQLCachePropertiesError,
-    AQLRunningQueryGetError, AQLSlowQueryGetError, AQLSlowQueryClearError,
-    AQLQueryTrackingGetError, AQLQueryKillError)
+    AQLQueryListError,
+    AQLQueryClearError,
+    AQLQueryTrackingGetError,
+    AQLQueryKillError,
+    AQLQueryTrackingSetError
+)
 from arango.request import Request
 
 
 class AQL(APIWrapper):
-    """Wrapper for invoking ArangoDB Query Language (AQL).
+    """API Wrapper for invoking AQL (ArangoDB Query Language).
 
     :param connection: HTTP connection.
     :type connection: arango.connection.Connection
     :param executor: API executor.
-    :type executor: arango.api.APIExecutor
+    :type executor: arango.executor.DefaultExecutor
     """
 
     def __init__(self, connection, executor):
@@ -31,7 +39,46 @@ class AQL(APIWrapper):
         self._cache = AQLQueryCache(connection, executor)
 
     def __repr__(self):
-        return '<AQL in {}>'.format(self._conn.database)
+        return '<AQL in {}>'.format(self._conn.db_name)
+
+    # noinspection PyMethodMayBeStatic
+    def _format_tracking(self, body):
+        """Format the tracking properties.
+
+        :param body: Response body.
+        :type body: dict
+        :return: Formatted body.
+        :rtype: dict
+        """
+        body.pop('code', None)
+        body.pop('error', None)
+        if 'maxQueryStringLength' in body:
+            body['max_query_string_length'] = body.pop('maxQueryStringLength')
+        if 'maxSlowQueries' in body:
+            body['max_slow_queries'] = body.pop('maxSlowQueries')
+        if 'slowQueryThreshold' in body:
+            body['slow_query_threshold'] = body.pop('slowQueryThreshold')
+        if 'trackBindVars' in body:
+            body['track_bind_vars'] = body.pop('trackBindVars')
+        if 'trackSlowQueries' in body:
+            body['track_slow_queries'] = body.pop('trackSlowQueries')
+        return body
+
+    # noinspection PyMethodMayBeStatic
+    def _format_queries(self, body):
+        """Format the list of queries.
+
+        :param body: Response body.
+        :type body: dict
+        :return: Formatted body.
+        :rtype: dict
+        """
+        for query in body:
+            if 'bindVars' in query:
+                query['bind_vars'] = query.pop('bindVars')
+            if 'runTime' in query:
+                query['runtime'] = query.pop('runTime')
+        return body
 
     @property
     def cache(self):
@@ -46,7 +93,7 @@ class AQL(APIWrapper):
         """Inspect the AQL query and return its metadata.
 
         :param query: Query to inspect.
-        :type query: str or unicode
+        :type query: str | unicode
         :param all_plans: If set to True, all possible execution plans are
             returned in the result. If set to False, only the optimal plan
             is returned.
@@ -55,8 +102,8 @@ class AQL(APIWrapper):
         :type max_plans: int
         :param opt_rules: List of optimizer rules.
         :type opt_rules: list
-        :return: Execution plan (or plans if **all_plans** was set to True).
-        :rtype: dict or list
+        :return: Execution plan or plans if **all_plans** was set to True.
+        :rtype: dict | list
         :raise arango.exceptions.AQLQueryExplainError: If explain fails.
         """
         options = {'allPlans': all_plans}
@@ -74,7 +121,6 @@ class AQL(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise AQLQueryExplainError(resp)
-
             if 'plan' in resp.body:
                 return resp.body['plan']
             else:
@@ -86,10 +132,10 @@ class AQL(APIWrapper):
         """Validate the AQL query.
 
         :param query: Query to validate.
-        :type query: str or unicode
-        :return: True if the validation is successful, False otherwise.
+        :type query: str | unicode
+        :return: True if the validation was successful, False otherwise.
         :rtype: bool
-        :raise arango.exceptions.AQLQueryValidateError: If validate fails.
+        :raise arango.exceptions.AQLQueryValidateError: If validation fails.
         """
         request = Request(
             method='post',
@@ -123,11 +169,13 @@ class AQL(APIWrapper):
                 max_warning_count=None,
                 intermediate_commit_count=None,
                 intermediate_commit_size=None,
-                satellite_sync_wait=None):
-        """Execute the AQL query and return the result cursor.
+                satellite_sync_wait=None,
+                read_collections=None,
+                write_collections=None):
+        """Execute an AQL query and return the result cursor.
 
         :param query: Query to execute.
-        :type query: str or unicode
+        :type query: str | unicode
         :param count: Include the document count in the cursor.
         :type count: bool
         :param batch_size: Number of documents fetched in one round trip.
@@ -137,23 +185,22 @@ class AQL(APIWrapper):
         :param bind_vars: Bind variables for the query.
         :type bind_vars: dict
         :param full_count: This parameter only applies to queries with LIMIT
-            clauses. If set to True, the cursor will include the full count:
-            the number of matched documents before the last LIMIT clause is
-            executed. Similar to MySQL's SQL_CALC_FOUND_ROWS hint, this can
-            be retrieve the number of documents found where only a subset is
-            returned. Using this disables a few LIMIT optimizations and may
-            lead to more documents being processed and longer query execution.
+            clauses. If set to True, the cursor will include the full count
+            (the number of matched documents before the last LIMIT clause is
+            executed). This is similar to MySQL SQL_CALC_FOUND_ROWS hint. Using
+            this disables a few LIMIT optimizations and may lead to a longer
+            query execution.
         :type full_count: bool
-        :param max_plans: Maximum number of plans the optimizer generates
+        :param max_plans: Max number of plans the optimizer generates.
         :type max_plans: int
-        :param optimizer_rules: List of optimizer rules
-        :type optimizer_rules: [str or unicode]
+        :param optimizer_rules: List of optimizer rules.
+        :type optimizer_rules: [str | unicode]
         :param cache: If set to True, the query cache is used. The operation
             mode of the cache must be set to "on" or "demand".
         :type cache: bool
-        :param memory_limit: Maximum amount of memory (in bytes) the query
-            is allowed to use. If the query goes over the limit, it fails with
-            error "resource limit exceeded". Value 0 indicates no limit.
+        :param memory_limit: Max amount of memory the query is allowed to
+            use in bytes. If the query goes over the limit, it fails with error
+            "resource limit exceeded". Value 0 indicates no limit.
         :type memory_limit: int
         :param fail_on_warning: If set to True, the query throws an exception
             instead of producing a warning. This parameter can be used during
@@ -168,22 +215,29 @@ class AQL(APIWrapper):
         :param max_transaction_size: Transaction size limit in bytes. Applies
             only to RocksDB storage engine.
         :type max_transaction_size: int
-        :param max_warning_count: Maximum number of warnings queries return.
+        :param max_warning_count: Max number of warnings queries return.
         :type max_warning_count: int
-        :param intermediate_commit_count: Maximum number of operations after
+        :param intermediate_commit_count: Max number of operations after
             which an intermediate commit is performed automatically. Applies
             only to RocksDB storage engine.
         :type intermediate_commit_count: int
-        :param intermediate_commit_size: Maximum total size of operations after
-            which an intermediate commit is performed automatically. Applies
-            only to RocksDB storage engine.
+        :param intermediate_commit_size: Max size of operations in bytes
+            after which an intermediate commit is performed automatically.
+            Applies only to RocksDB storage engine.
         :type intermediate_commit_size: int
         :param satellite_sync_wait: Number of seconds in which the server must
             synchronize the satellite collections involved in the query. When
             the threshold is reached the query is stopped. This parameter is
             for enterprise version of ArangoDB only.
-        :type satellite_sync_wait: int or float
-        :return: document cursor
+        :type satellite_sync_wait: int | float
+        :param read_collections: Names of collections read in the query.
+            Applies only for transactions.
+        :type read_collections: [str | unicode]
+        :param write_collections: Names of collections written to in the query.
+            This parameter is required for transactions.
+        :type write_collections: [str | unicode]
+
+        :return: Result cursor.
         :rtype: arango.cursor.Cursor
         :raise arango.exceptions.AQLQueryExecuteError: If execute fails.
         """
@@ -222,11 +276,21 @@ class AQL(APIWrapper):
             options['satelliteSyncWait'] = satellite_sync_wait
         if options:
             data['options'] = options
+        data.update(options)
+
+        command = 'db._query({}, {}, {}).toArray()'.format(
+            dumps(query),
+            dumps(bind_vars),
+            dumps(data),
+        ) if self._is_transaction else None
 
         request = Request(
             method='post',
             endpoint='/_api/cursor',
-            data=data
+            data=data,
+            command=command,
+            read=read_collections,
+            write=write_collections
         )
 
         def response_handler(resp):
@@ -240,8 +304,8 @@ class AQL(APIWrapper):
         """Kill a running AQL query.
 
         :param query_id: Query ID.
-        :type query_id: str or unicode
-        :return: True if the query was killed successfully.
+        :type query_id: str | unicode
+        :return: True if the request to kill the query was sent successfully.
         :rtype: bool
         :raise arango.exceptions.AQLQueryKillError: If kill operation fails.
         """
@@ -257,12 +321,12 @@ class AQL(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    def running_queries(self):
+    def queries(self):
         """Return the currently running AQL queries.
 
         :return: Running AQL queries.
         :rtype: [dict]
-        :raise arango.exceptions.AQLRunningQueryGetError: If retrieval fails.
+        :raise arango.exceptions.AQLQueryListError: If retrieval fails.
         """
         request = Request(
             method='get',
@@ -271,11 +335,8 @@ class AQL(APIWrapper):
 
         def response_handler(resp):
             if not resp.is_success:
-                raise AQLRunningQueryGetError(resp)
-            for query in resp.body:
-                query['bind_vars'] = query.pop('bindVars')
-                query['runtime'] = query.pop('runTime')
-            return resp.body
+                raise AQLQueryListError(resp)
+            return self._format_queries(resp.body)
 
         return self._execute(request, response_handler)
 
@@ -284,7 +345,7 @@ class AQL(APIWrapper):
 
         :return: Slow AQL queries.
         :rtype: [dict]
-        :raise arango.exceptions.AQLSlowQueryGetError: If retrieval fails.
+        :raise arango.exceptions.AQLQueryListError: If retrieval fails.
         """
         request = Request(
             method='get',
@@ -293,11 +354,8 @@ class AQL(APIWrapper):
 
         def response_handler(resp):
             if not resp.is_success:
-                raise AQLSlowQueryGetError(resp)
-            for query in resp.body:
-                query['bind_vars'] = query.pop('bindVars')
-                query['runtime'] = query.pop('runTime')
-            return resp.body
+                raise AQLQueryListError(resp)
+            return self._format_queries(resp.body)
 
         return self._execute(request, response_handler)
 
@@ -306,7 +364,7 @@ class AQL(APIWrapper):
 
         :return: True if the slow queries were cleared successfully.
         :rtype: bool
-        :raise arango.exceptions.AQLSlowQueryClearError: If clear fails.
+        :raise arango.exceptions.AQLQueryClearError: If clear fails.
         """
         request = Request(
             method='delete',
@@ -315,15 +373,15 @@ class AQL(APIWrapper):
 
         def response_handler(resp):
             if not resp.is_success:
-                raise AQLSlowQueryClearError(resp)
+                raise AQLQueryClearError(resp)
             return True
 
         return self._execute(request, response_handler)
 
     def tracking(self):
-        """Return the properties for AQL query tracking
+        """Return AQL query tracking properties.
 
-        :return: Properties for AQL query tracking.
+        :return: AQL query tracking properties.
         :rtype: dict
         :raise arango.exceptions.AQLQueryTrackingGetError: If retrieval fails.
         """
@@ -335,14 +393,7 @@ class AQL(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise AQLQueryTrackingGetError(resp)
-            return {
-                'enabled': resp.body['enabled'],
-                'max_query_string_length': resp.body['maxQueryStringLength'],
-                'max_slow_queries': resp.body['maxSlowQueries'],
-                'slow_query_threshold': resp.body['slowQueryThreshold'],
-                'track_bind_vars': resp.body['trackBindVars'],
-                'track_slow_queries': resp.body['trackSlowQueries'],
-            }
+            return self._format_tracking(resp.body)
 
         return self._execute(request, response_handler)
 
@@ -353,11 +404,11 @@ class AQL(APIWrapper):
                      max_query_string_length=None,
                      track_bind_vars=None,
                      track_slow_queries=None):
-        """Return the properties for AQL query tracking
+        """Configure AQL query tracking properties
 
-        :return: Properties for AQL query tracking.
+        :return:  AQL query tracking properties.
         :rtype: dict
-        :raise arango.exceptions.AQLQueryTrackingGetError: If retrieval fails.
+        :raise arango.exceptions.AQLQueryTrackingSetError: If configure fails.
         """
         data = {}
         if enabled is not None:
@@ -381,15 +432,8 @@ class AQL(APIWrapper):
 
         def response_handler(resp):
             if not resp.is_success:
-                raise AQLFunctionListError(resp)
-            return {
-                'enabled': resp.body['enabled'],
-                'max_query_string_length': resp.body['maxQueryStringLength'],
-                'max_slow_queries': resp.body['maxSlowQueries'],
-                'slow_query_threshold': resp.body['slowQueryThreshold'],
-                'track_bind_vars': resp.body['trackBindVars'],
-                'track_slow_queries': resp.body['trackSlowQueries'],
-            }
+                raise AQLQueryTrackingSetError(resp)
+            return self._format_tracking(resp.body)
 
         return self._execute(request, response_handler)
 
@@ -414,9 +458,9 @@ class AQL(APIWrapper):
         """Create a new AQL function.
 
         :param name: Name of the new AQL function.
-        :type name: str or unicode
+        :type name: str | unicode
         :param code: Function definition in Javascript.
-        :type code: str or unicode
+        :type code: str | unicode
         :return: True if the AQL function was created successfully.
         :rtype: bool
         :raise arango.exceptions.AQLFunctionCreateError: If create fails.
@@ -428,9 +472,9 @@ class AQL(APIWrapper):
         )
 
         def response_handler(resp):
-            if resp.status_code not in (200, 201):
+            if not resp.is_success:
                 raise AQLFunctionCreateError(resp)
-            return not resp.body['error']
+            return True
 
         return self._execute(request, response_handler)
 
@@ -438,7 +482,7 @@ class AQL(APIWrapper):
         """Delete an AQL function.
 
         :param name: Name of the AQL function.
-        :type name: str or unicode
+        :type name: str | unicode
         :param group: If set to True, value of parameter **name** is treated
             as a namespace prefix, and all functions in the namespace are
             deleted. If set to False, the value of **name** must be a fully
@@ -461,10 +505,11 @@ class AQL(APIWrapper):
         )
 
         def response_handler(resp):
+            if resp.error_code == 1582 and ignore_missing:
+                return False
             if not resp.is_success:
-                if not (resp.status_code == 404 and ignore_missing):
-                    raise AQLFunctionDeleteError(resp)
-            return not resp.body['error']
+                raise AQLFunctionDeleteError(resp)
+            return True
 
         return self._execute(request, response_handler)
 
@@ -473,7 +518,7 @@ class AQLQueryCache(APIWrapper):
     """ArangoDB query cache."""
 
     def __repr__(self):
-        return '<AQLQueryCache in {}>'.format(self._conn.database)
+        return '<AQLQueryCache in {}>'.format(self._conn.db_name)
 
     def properties(self):
         """Return the query cache properties.
@@ -501,8 +546,8 @@ class AQLQueryCache(APIWrapper):
         """Set the query cache properties.
 
         :param mode: Operation mode ("off", "on" or "demand").
-        :type mode: str or unicode
-        :param limit: Maximum number of results to be stored.
+        :type mode: str | unicode
+        :param limit: Max number of results to be stored.
         :type limit: int
         :return: Result of the operation.
         :rtype: dict
@@ -545,6 +590,6 @@ class AQLQueryCache(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise AQLCacheClearError(resp)
-            return not resp.body['error']
+            return True
 
         return self._execute(request, response_handler)

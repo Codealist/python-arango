@@ -1,5 +1,7 @@
 from __future__ import absolute_import, unicode_literals
 
+__all__ = ['WAL']
+
 from arango.api import APIWrapper
 from arango.exceptions import (
     WALFlushError,
@@ -16,11 +18,29 @@ class WAL(APIWrapper):
     :param connection: HTTP connection.
     :type connection: arango.connection.Connection
     :param executor: API executor.
-    :type executor: arango.api.APIExecutor
+    :type executor: arango.executor.DefaultExecutor
     """
 
     def __init__(self, connection, executor):
         super(WAL, self).__init__(connection, executor)
+
+    # noinspection PyMethodMayBeStatic
+    def _format_properties(self, body):
+        if 'allowOversizeEntries' in body:
+            body['oversized_ops'] = body.pop('allowOversizeEntries')
+        if 'logfileSize' in body:
+            body['log_size'] = body.pop('logfileSize')
+        if 'historicLogfiles' in body:
+            body['historic_logs'] = body.pop('historicLogfiles')
+        if 'reserveLogfiles' in body:
+            body['reserve_logs'] = body.pop('reserveLogfiles')
+        if 'syncInterval' in body:
+            body['sync_interval'] = body.pop('syncInterval')
+        if 'throttleWait' in body:
+            body['throttle_wait'] = body.pop('throttleWait')
+        if 'throttleWhenPending' in body:
+            body['throttle_limit'] = body.pop('throttleWhenPending')
+        return body
 
     def properties(self):
         """Return the configuration of the write-ahead log.
@@ -37,15 +57,7 @@ class WAL(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise WALPropertiesError(resp)
-            return {
-                'oversized_ops': resp.body.get('allowOversizeEntries'),
-                'log_size': resp.body.get('logfileSize'),
-                'historic_logs': resp.body.get('historicLogfiles'),
-                'reserve_logs': resp.body.get('reserveLogfiles'),
-                'sync_interval': resp.body.get('syncInterval'),
-                'throttle_wait': resp.body.get('throttleWait'),
-                'throttle_limit': resp.body.get('throttleWhenPending')
-            }
+            return self._format_properties(resp.body)
 
         return self._execute(request, response_handler)
 
@@ -98,15 +110,7 @@ class WAL(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise WALConfigureError(resp)
-            return {
-                'oversized_ops': resp.body.get('allowOversizeEntries'),
-                'log_size': resp.body.get('logfileSize'),
-                'historic_logs': resp.body.get('historicLogfiles'),
-                'reserve_logs': resp.body.get('reserveLogfiles'),
-                'sync_interval': resp.body.get('syncInterval'),
-                'throttle_wait': resp.body.get('throttleWait'),
-                'throttle_limit': resp.body.get('throttleWhenPending')
-            }
+            return self._format_properties(resp.body)
 
         return self._execute(request, response_handler)
 
@@ -140,11 +144,13 @@ class WAL(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise WALTransactionListError(resp)
-            return {
-                'last_collected': resp.body['minLastCollected'],
-                'last_sealed': resp.body['minLastSealed'],
-                'count': resp.body['runningTransactions']
-            }
+            if 'minLastCollected' in resp.body:
+                resp.body['last_collected'] = resp.body.pop('minLastCollected')
+            if 'minLastSealed' in resp.body:
+                resp.body['last_sealed'] = resp.body.pop('minLastSealed')
+            if 'runningTransactions' in resp.body:
+                resp.body['count'] = resp.body.pop('runningTransactions')
+            return resp.body
 
         return self._execute(request, response_handler)
 
@@ -171,6 +177,6 @@ class WAL(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise WALFlushError(resp)
-            return not resp.body.get('error')
+            return True
 
         return self._execute(request, response_handler)

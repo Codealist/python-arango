@@ -1,6 +1,5 @@
 from __future__ import absolute_import, unicode_literals
 
-import pytest
 from six import string_types
 
 from arango.exceptions import (
@@ -8,12 +7,21 @@ from arango.exceptions import (
     PregelJobGetError,
     PregelJobDeleteError
 )
-from tests.utils import generate_string
+from tests.helpers import (
+    assert_raises,
+    generate_string
+)
+
+def test_pregel_attributes(db, username):
+    assert db.pregel.context in ['default', 'async', 'batch', 'transaction']
+    assert db.pregel.username == username
+    assert db.pregel.db_name == db.name
+    assert repr(db.pregel) == '<Pregel in {}>'.format(db.name)
 
 
 def test_pregel_management(db, graph):
     # Test create pregel job
-    job_id = db.create_pregel_job(
+    job_id = db.pregel.create_job(
         'pagerank',
         graph.name,
         store=False,
@@ -26,11 +34,12 @@ def test_pregel_management(db, graph):
     assert isinstance(job_id, int)
 
     # Test create pregel job with unsupported algorithm
-    with pytest.raises(PregelJobCreateError):
-        db.create_pregel_job('invalid', graph.name)
+    with assert_raises(PregelJobCreateError) as err:
+        db.pregel.create_job('invalid', graph.name)
+    assert err.value.error_code == 10
 
     # Test get existing pregel job
-    job = db.pregel_job(job_id)
+    job = db.pregel.job(job_id)
     assert isinstance(job['state'], string_types)
     assert isinstance(job['aggregators'], dict)
     assert isinstance(job['gss'], int)
@@ -38,15 +47,13 @@ def test_pregel_management(db, graph):
     assert isinstance(job['send_count'], int)
     assert isinstance(job['total_runtime'], float)
 
-    # Test get missing pregel job
-    with pytest.raises(PregelJobGetError):
-        db.pregel_job(generate_string())
-
     # Test delete existing pregel job
-    assert db.delete_pregel_job(job_id) is True
-    with pytest.raises(PregelJobGetError):
-        db.pregel_job(job_id)
+    assert db.pregel.delete_job(job_id) is True
+    with assert_raises(PregelJobGetError) as err:
+        db.pregel.job(job_id)
+    assert err.value.error_code == 10
 
     # Test delete missing pregel job
-    with pytest.raises(PregelJobDeleteError):
-        db.delete_pregel_job(generate_string())
+    with assert_raises(PregelJobDeleteError) as err:
+        db.pregel.delete_job(generate_string())
+    assert err.value.error_code == 10

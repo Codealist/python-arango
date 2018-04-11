@@ -1,27 +1,30 @@
 from __future__ import absolute_import, unicode_literals
 
-import pytest
-
 from arango.exceptions import (
     WALConfigureError,
     WALFlushError,
     WALPropertiesError,
     WALTransactionListError
 )
+from tests.helpers import assert_raises
 
 
-def test_wal_get_properties(db, bad_db):
-    properties = db.wal.properties()
+def test_wal_misc_methods(sys_db, bad_db):
+    # Test get properties
+    properties = sys_db.wal.properties()
     assert 'oversized_ops' in properties
     assert 'log_size' in properties
     assert 'historic_logs' in properties
     assert 'reserve_logs' in properties
+    assert 'throttle_wait' in properties
+    assert 'throttle_limit' in properties
 
-    with pytest.raises(WALPropertiesError):
+    # Test get properties with bad database
+    with assert_raises(WALPropertiesError) as err:
         bad_db.wal.properties()
+    assert err.value.error_code == 1228
 
-
-def test_wal_set_properties(sys_db, bad_db):
+    # Test configure properties
     sys_db.wal.configure(
         historic_logs=15,
         oversized_ops=False,
@@ -38,23 +41,26 @@ def test_wal_set_properties(sys_db, bad_db):
     assert properties['throttle_limit'] == 0
     assert properties['throttle_wait'] == 16000
 
-    with pytest.raises(WALConfigureError):
+    # Test configure properties with bad database
+    with assert_raises(WALConfigureError) as err:
         bad_db.wal.configure(log_size=2000000)
+    assert err.value.error_code == 1228
 
-
-def test_wal_get_transactions(db, bad_db):
-    result = db.wal.transactions()
+    # Test get transactions
+    result = sys_db.wal.transactions()
     assert 'count' in result
-    assert 'last_sealed' in result
     assert 'last_collected' in result
 
-    with pytest.raises(WALTransactionListError):
+    # Test get transactions with bad database
+    with assert_raises(WALTransactionListError) as err:
         bad_db.wal.transactions()
+    assert err.value.error_code == 1228
 
-
-def test_wal_flush(db, bad_db):
-    result = db.wal.flush(garbage_collect=False, sync=False)
+    # Test flush
+    result = sys_db.wal.flush(garbage_collect=False, sync=False)
     assert isinstance(result, bool)
 
-    with pytest.raises(WALFlushError):
+    # Test flush with bad database
+    with assert_raises(WALFlushError) as err:
         bad_db.wal.flush(garbage_collect=False, sync=False)
+    assert err.value.error_code == 1228

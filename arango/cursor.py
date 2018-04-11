@@ -1,37 +1,63 @@
 from __future__ import absolute_import, unicode_literals
 
+__all__ = ['Cursor']
+
 from arango.exceptions import (
     CursorNextError,
     CursorCloseError,
 )
 from arango.request import Request
-from arango.utils import is_list
 
 
 class Cursor(object):
-    """ArangoDB cursor which fetches documents from server in batches.
+    """ArangoDB cursor which fetches results from the server in batches.
 
     :param connection: HTTP connection.
     :type connection: arango.connection.Connection
     :param init_data: Cursor initialization data.
-    :type init_data: dict
-    :param cursor_type: Cursor type. Allowed values are "cursor" for standard
-        cursors and "export" for export cursors.
-    :type cursor_type: str or unicode
+    :type init_data: dict | list
+    :param type: Cursor type. Allowed values are "cursor" (standard cursor)
+        and "export" (export cursor).
+    :type cursor_type: str | unicode
+
+    .. warning::
+        Executing API requests in a transaction loads **all** results in the
+        cursor into client-side memory. User must use queries or operations
+        larger number of documents with care.
     """
 
-    def __init__(self, connection, init_data, cursor_type='cursor'):
+    __slots__ = [
+        '_conn',
+        '_type',
+        '_id',
+        '_count',
+        '_cached',
+        '_stats',
+        '_profile',
+        '_warnings',
+        '_has_more',
+        '_batch',
+        '_count'
+    ]
+
+    def __init__(self, connection, init_data, type='cursor'):
         self._conn = connection
-        self._type = cursor_type
+        self._type = type
         self._id = None
         self._count = None
         self._cached = None
-        self._batch = None
-        self._has_more = None
         self._stats = None
         self._profile = None
         self._warnings = None
-        self._update_data(init_data)
+
+        if isinstance(init_data, list):
+            # In a transaction, the init data is a list of all results
+            self._has_more = False
+            self._batch = init_data
+            self._count = len(init_data)
+        else:
+            # In other settings, the init data is cursor information dict
+            self._update_data(init_data)
 
     def __iter__(self):
         return self
@@ -49,7 +75,7 @@ class Cursor(object):
         self.close(ignore_missing=True)
 
     def __repr__(self):
-        return '<Cursor {}>'.format(self._id)
+        return '<Cursor {}>'.format(self._id) if self._id else '<Cursor>'
 
     def _update_data(self, data):
         """Update the cursor using the data from ArangoDB.
@@ -57,49 +83,46 @@ class Cursor(object):
         :param data: Cursor data from ArangoDB.
         :type data: dict
         """
-        if is_list(data):
-            self._count = len(data)
-            self._has_more = False
-            self._batch = data
-        else:
-            if self._id is None:
-                self._id = data.get('id')
-            self._count = data.get('count')
-            self._cached = data.get('cached')
-            self._has_more = data['hasMore']
-            self._batch = data['result']
+        if 'id' in data:
+            self._id = data['id']
+        if 'count' in data:
+            self._count = data['count']
+        if 'cached' in data:
+            self._cached = data['cached']
+        self._has_more = data['hasMore']
+        self._batch = data['result']
 
-            if 'extra' in data:
-                extra = data['extra']
+        if 'extra' in data:
+            extra = data['extra']
 
-                if 'profile' in extra:
-                    self._profile = extra['profile']
+            if 'profile' in extra:
+                self._profile = extra['profile']
 
-                if 'warnings' in extra:
-                    self._warnings = extra['warnings']
+            if 'warnings' in extra:
+                self._warnings = extra['warnings']
 
-                if 'stats' in extra:
-                    stats = extra['stats']
-                    if 'writesExecuted' in stats:
-                        stats['modified'] = stats.pop('writesExecuted')
-                    if 'writesIgnored' in stats:
-                        stats['ignored'] = stats.pop('writesIgnored')
-                    if 'scannedFull' in stats:
-                        stats['scanned_full'] = stats.pop('scannedFull')
-                    if 'scannedIndex' in stats:
-                        stats['scanned_index'] = stats.pop('scannedIndex')
-                    if 'executionTime' in stats:
-                        stats['execution_time'] = stats.pop('executionTime')
-                    if 'httpRequests' in stats:
-                        stats['http_requests'] = stats.pop('httpRequests')
-                    self._stats = stats
+            if 'stats' in extra:
+                stats = extra['stats']
+                if 'writesExecuted' in stats:
+                    stats['modified'] = stats.pop('writesExecuted')
+                if 'writesIgnored' in stats:
+                    stats['ignored'] = stats.pop('writesIgnored')
+                if 'scannedFull' in stats:
+                    stats['scanned_full'] = stats.pop('scannedFull')
+                if 'scannedIndex' in stats:
+                    stats['scanned_index'] = stats.pop('scannedIndex')
+                if 'executionTime' in stats:
+                    stats['execution_time'] = stats.pop('executionTime')
+                if 'httpRequests' in stats:
+                    stats['http_requests'] = stats.pop('httpRequests')
+                self._stats = stats
 
     @property
     def id(self):
         """Return the cursor ID.
 
         :return: Cursor ID.
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return self._id
 
@@ -108,7 +131,7 @@ class Cursor(object):
         """Return the cursor type.
 
         :return: Cursor type ("cursor" or "export").
-        :rtype: str or unicode.
+        :rtype: str | unicode.
         """
         return self._type
 

@@ -1,5 +1,7 @@
 from __future__ import absolute_import, unicode_literals
 
+__all__ = ['Foxx']
+
 from arango.api import APIWrapper
 from arango.exceptions import (
     FoxxServiceCreateError,
@@ -33,14 +35,14 @@ class Foxx(APIWrapper):
     :param connection: HTTP connection.
     :type connection: arango.connection.Connection
     :param executor: API executor.
-    :type executor: arango.api.APIExecutor
+    :type executor: arango.executor.DefaultExecutor
     """
 
     def __init__(self, connection, executor):
         super(Foxx, self).__init__(connection, executor)
 
     def __repr__(self):
-        return '<Foxx in {}>'.format(self._conn.database)
+        return '<Foxx in {}>'.format(self._conn.db_name)
 
     def services(self, exclude_system=False):
         """List installed services.
@@ -48,7 +50,7 @@ class Foxx(APIWrapper):
         :param exclude_system: Exclude system services.
         :type exclude_system: bool
         :return: List of system service.
-        :rtype: [dict] or [str or unicode]
+        :rtype: [str | unicode | dict]
         :raise arango.exceptions.FoxxServiceListError: If retrieval fails.
         """
         request = Request(
@@ -68,7 +70,7 @@ class Foxx(APIWrapper):
         """Return service metadata.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :return: Service metadata.
         :rtype: dict
         :raise arango.exceptions.FoxxServiceGetError: If retrieval fails.
@@ -98,23 +100,23 @@ class Foxx(APIWrapper):
                        source,
                        config=None,
                        dependencies=None,
-                       dev=None,
+                       development=None,
                        setup=None,
                        legacy=None):
         """Install a new service.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :param source: Fully qualified URL or absolute path on the server file
             system. Must be accessible by the server (or by all servers in a
             cluster).
-        :type source: str or unicode
+        :type source: str | unicode
         :param config: Configuration values.
         :type config: dict
         :param dependencies: Dependency settings.
         :type dependencies: dict
-        :param dev: Enable development mode.
-        :type dev: bool
+        :param development: Enable development mode.
+        :type development: bool
         :param setup: Run service setup script.
         :type setup: bool
         :param legacy: Install the service in 2.8 legacy compatibility mode.
@@ -124,8 +126,8 @@ class Foxx(APIWrapper):
         :raise arango.exceptions.FoxxServiceCreateError: If install fails.
         """
         params = {'mount': mount}
-        if dev is not None:
-            params['development'] = dev
+        if development is not None:
+            params['development'] = development
         if setup is not None:
             params['setup'] = setup
         if legacy is not None:
@@ -141,12 +143,70 @@ class Foxx(APIWrapper):
             method='post',
             endpoint='/_api/foxx',
             params=params,
-            data=data
+            data=data,
         )
 
         def response_handler(resp):
             if not resp.is_success:
                 raise FoxxServiceCreateError(resp)
+            return resp.body
+
+        return self._execute(request, response_handler)
+
+    def update_service(self,
+                       mount,
+                       source=None,
+                       config=None,
+                       dependencies=None,
+                       teardown=None,
+                       setup=None,
+                       legacy=None):
+        """Update (upgrade) a service.
+
+        :param mount: Service mount path (e.g "/_admin/aardvark").
+        :type mount: str | unicode
+        :param source: Fully qualified URL or absolute path on the server file
+            system. Must be accessible by the server (or by all servers in a
+            cluster).
+        :type source: str | unicode
+        :param config: Configuration values.
+        :type config: dict
+        :param dependencies: Dependency settings.
+        :type dependencies: dict
+        :param teardown: Enable development mode.
+        :type teardown: bool
+        :param setup: Run service setup script.
+        :type setup: bool
+        :param legacy: Install the service in 2.8 legacy compatibility mode.
+        :type legacy: bool
+        :return: The result of the installation.
+        :rtype: dict
+        :raise arango.exceptions.FoxxServiceUpdateError: If update fails.
+        """
+        params = {'mount': mount}
+        if teardown is not None:
+            params['teardown'] = teardown
+        if setup is not None:
+            params['setup'] = setup
+        if legacy is not None:
+            params['legacy'] = legacy
+
+        data = {'source': source}
+        if config is not None:
+            data['configuration'] = config
+        if dependencies is not None:
+            data['dependencies'] = dependencies
+
+        request = Request(
+            method='patch',
+            endpoint='/_api/foxx/service',
+            params=params,
+            data=data,
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise FoxxServiceUpdateError(resp)
             return resp.body
 
         return self._execute(request, response_handler)
@@ -163,11 +223,11 @@ class Foxx(APIWrapper):
         """Replace a service by removing the old one and installing a new one.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :param source: Fully qualified URL or absolute path on the server file
             system. Must be accessible by the server (or by all servers in a
             cluster).
-        :type source: str or unicode
+        :type source: str | unicode
         :param config: Configuration values.
         :type config: dict
         :param dependencies: Dependency settings.
@@ -214,72 +274,14 @@ class Foxx(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    def update_service(self,
-                       mount,
-                       source=None,
-                       config=None,
-                       dependencies=None,
-                       teardown=None,
-                       setup=None,
-                       legacy=None):
-        """Update (upgrade) a service.
-
-        :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
-        :param source: Fully qualified URL or absolute path on the server file
-            system. Must be accessible by the server (or by all servers in a
-            cluster).
-        :type source: str or unicode
-        :param config: Configuration values.
-        :type config: dict
-        :param dependencies: Dependency settings.
-        :type dependencies: dict
-        :param teardown: Enable development mode.
-        :type teardown: bool
-        :param setup: Run service setup script.
-        :type setup: bool
-        :param legacy: Install the service in 2.8 legacy compatibility mode.
-        :type legacy: bool
-        :return: The result of the installation.
-        :rtype: dict
-        :raise arango.exceptions.FoxxServiceUpdateError: If update fails.
-        """
-        params = {'mount': mount}
-        if teardown is not None:
-            params['teardown'] = teardown
-        if setup is not None:
-            params['setup'] = setup
-        if legacy is not None:
-            params['legacy'] = legacy
-
-        data = {'source': source}
-        if config is not None:
-            data['configuration'] = config
-        if dependencies is not None:
-            data['dependencies'] = dependencies
-
-        request = Request(
-            method='patch',
-            endpoint='/_api/foxx/service',
-            params=params,
-            data=data,
-        )
-
-        def response_handler(resp):
-            if not resp.is_success:
-                raise FoxxServiceUpdateError(resp)
-            return resp.body
-
-        return self._execute(request, response_handler)
-
     def delete_service(self, mount, teardown=None):
         """Uninstall a service.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :param teardown: Run the service teardown script.
         :type teardown: bool
-        :return: Uninstall result.
+        :return: True if the service was deleted successfully.
         :rtype: dict
         :raise arango.exceptions.FoxxServiceDeleteError: If delete fails.
         """
@@ -296,7 +298,7 @@ class Foxx(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise FoxxServiceDeleteError(resp)
-            return resp.body
+            return True
 
         return self._execute(request, response_handler)
 
@@ -304,7 +306,7 @@ class Foxx(APIWrapper):
         """Return service configuration.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :return: Configuration values.
         :rtype: dict
         :raise arango.exceptions.FoxxConfigGetError: If retrieval fails.
@@ -326,7 +328,7 @@ class Foxx(APIWrapper):
         """Update service configuration.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :param config: Configuration values. Omitted options are ignored.
         :type config: dict
         :return: New configuration values.
@@ -351,7 +353,7 @@ class Foxx(APIWrapper):
         """Replace service configuration.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :param config: Configuration values. Omitted options are reset to their
             default values or marked as un-configured.
         :type config: dict
@@ -377,7 +379,7 @@ class Foxx(APIWrapper):
         """Return service dependencies.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :return: Dependency settings.
         :rtype: dict
         :raise arango.exceptions.FoxxDependencyGetError: If retrieval fails.
@@ -399,7 +401,7 @@ class Foxx(APIWrapper):
         """Update service dependencies.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :param dependencies: Dependencies settings. Omitted ones are ignored.
         :type dependencies: dict
         :return: New dependency settings.
@@ -424,7 +426,7 @@ class Foxx(APIWrapper):
         """Replace service dependencies.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :param dependencies: Dependencies settings. Omitted ones are disabled.
         :type dependencies: dict
         :return: New dependency settings.
@@ -445,120 +447,7 @@ class Foxx(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    def scripts(self, mount):
-        """List service scripts.
-
-        :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
-        :return: Service scripts.
-        :rtype: dict
-        :raise arango.exceptions.FoxxScriptListError: If retrieval fails.
-        """
-        request = Request(
-            method='get',
-            endpoint='/_api/foxx/scripts',
-            params={'mount': mount},
-        )
-
-        def response_handler(resp):
-            if not resp.is_success:
-                raise FoxxScriptListError(resp)
-            return resp.body
-
-        return self._execute(request, response_handler)
-
-    def run_script(self, mount, name, arg=None):
-        """Run a service script.
-
-        :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
-        :param name: Script name.
-        :type name: str or unicode
-        :param arg: Arbitrary value passed into the script as first arguments.
-        :type arg: int or float or bool or str or unicode or dict or list
-        :return: Result of the script, if any.
-        :rtype: dict
-        :raise arango.exceptions.FoxxScriptRunError: If script fails.
-        """
-        request = Request(
-            method='post',
-            endpoint='/_api/foxx/scripts/{}'.format(name),
-            params={'mount': mount},
-            data=arg or {}
-        )
-
-        def response_handler(resp):
-            if not resp.is_success:
-                raise FoxxScriptRunError(resp)
-            return resp.body
-
-        return self._execute(request, response_handler)
-
-    def run_tests(self,
-                  mount,
-                  reporter='default',
-                  idiomatic=None,
-                  output_format=None):
-        """Run service tests.
-
-        :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
-        :param reporter: Supported reporters are:
-
-            .. code-block:: none
-
-                "default" : Simple list of test cases.
-
-                "suite"   : Object of test cases nested in suites.
-
-                "stream"  : Raw stream of test results.
-
-                "xunit"   : XUnit/JUnit compatible structure.
-
-                "tap"     : Raw TAP compatible stream.
-
-        :type reporter: str or unicode
-        :param idiomatic: Use the matching format for the reporter, regardless
-            of the value of parameter **accept** (Accept header).
-        :type: bool
-        :param output_format: Used to further control the result where allowed
-            values are "x-ldjson", "xml" and "text". When using the "stream"
-            reporter, setting this to "x-ldjson" returns newline-delimited
-            JSON stream. When using the "tap" reporter, setting this to "text"
-            returns plain text tap report. When using the "xunit" reporter,
-            settings this to "xml" returns an XML instead of JSONML.
-        :type output_format:
-        :return: Reporter output (e.g. raw JSON string, XML, plain text).
-        :rtype: str or unicode
-        :raise arango.exceptions.FoxxTestRunError: If operation fails.
-        """
-        params = {'mount': mount, 'reporter': reporter}
-        if idiomatic is not None:
-            params['idiomatic'] = idiomatic
-
-        headers = {}
-        if output_format == 'x-ldjson':
-            headers['Accept'] = 'application/x-ldjson'
-        elif output_format == 'xml':
-            headers['Accept'] = 'application/xml'
-        elif output_format == 'text':
-            headers['Accept'] = 'text/plain'
-
-        request = Request(
-            method='post',
-            endpoint='/_api/foxx/tests',
-            params=params,
-            headers=headers
-        )
-
-        def response_handler(resp):
-            if not resp.is_success:
-                raise FoxxTestRunError(resp)
-            return resp.raw_body
-
-        return self._execute(request, response_handler)
-
-    def enable_dev_mode(self, mount):
+    def enable_development(self, mount):
         """Put the service into development mode.
 
         While the service is running in development mode, the it is reloaded
@@ -570,7 +459,7 @@ class Foxx(APIWrapper):
         must be aware of this inconsistency in development mode.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :return: Update service metadata.
         :rtype: dict
         :raise arango.exceptions.FoxxDevEnableError: If operation fails.
@@ -588,14 +477,14 @@ class Foxx(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    def disable_dev_mode(self, mount):
+    def disable_development(self, mount):
         """Put the service into production mode.
 
         In a cluster with multiple coordinators, this replaces the service on
         all other coordinators with the version on the calling coordinator.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :return: Update service metadata.
         :rtype: dict
         :raise arango.exceptions.FoxxDevDisableError: If operation fails.
@@ -617,9 +506,9 @@ class Foxx(APIWrapper):
         """Return the service readme.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :return: Service readme.
-        :rtype: str or unicode
+        :rtype: str | unicode
         :raise arango.exceptions.FoxxReadmeGetError: If retrieval fails.
         """
         request = Request(
@@ -639,7 +528,7 @@ class Foxx(APIWrapper):
         """Return the Swagger API description for a service.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
+        :type mount: str | unicode
         :return: Swagger API description.
         :rtype: dict
         :raise arango.exceptions.FoxxSwaggerGetError: If retrieval fails.
@@ -653,6 +542,34 @@ class Foxx(APIWrapper):
         def response_handler(resp):
             if not resp.is_success:
                 raise FoxxSwaggerGetError(resp)
+            if 'basePath' in resp.body:
+                resp.body['base_path'] = resp.body.pop('basePath')
+            return resp.body
+
+        return self._execute(request, response_handler)
+
+    def download(self, mount):
+        """Download service bundle.
+
+        When development mode is enabled, a new bundle is always created.
+        Otherwise, the bundle represents the version of the service installed
+        on the ArangoDB instance.
+
+        :param mount: Service mount path (e.g "/_admin/aardvark").
+        :type mount: str | unicode
+        :return: Service bundle in raw string form.
+        :rtype: str | unicode
+        :raise arango.exceptions.FoxxDownloadError: If download fails.
+        """
+        request = Request(
+            method='post',
+            endpoint='/_api/foxx/download',
+            params={'mount': mount}
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise FoxxDownloadError(resp)
             return resp.body
 
         return self._execute(request, response_handler)
@@ -686,28 +603,115 @@ class Foxx(APIWrapper):
 
         return self._execute(request, response_handler)
 
-    def download(self, mount):
-        """Download service bundle.
-
-        When development mode is enabled, a new bundle is always created.
-        Otherwise, the bundle represents the version of the service installed
-        on the ArangoDB instance.
+    def scripts(self, mount):
+        """List service scripts.
 
         :param mount: Service mount path (e.g "/_admin/aardvark").
-        :type mount: str or unicode
-        :return: Service bundle in raw string form.
-        :rtype: str or unicode
-        :raise arango.exceptions.FoxxDownloadError: If download fails.
+        :type mount: str | unicode
+        :return: Service scripts.
+        :rtype: dict
+        :raise arango.exceptions.FoxxScriptListError: If retrieval fails.
         """
         request = Request(
-            method='post',
-            endpoint='/_api/foxx/download',
-            params={'mount': mount}
+            method='get',
+            endpoint='/_api/foxx/scripts',
+            params={'mount': mount},
         )
 
         def response_handler(resp):
             if not resp.is_success:
-                raise FoxxDownloadError(resp)
+                raise FoxxScriptListError(resp)
             return resp.body
+
+        return self._execute(request, response_handler)
+
+    def run_script(self, mount, name, arg=None):
+        """Run a service script.
+
+        :param mount: Service mount path (e.g "/_admin/aardvark").
+        :type mount: str | unicode
+        :param name: Script name.
+        :type name: str | unicode
+        :param arg: Arbitrary value passed into the script as first arguments.
+        :type arg: str | unicode | bool | int | list | dict
+        :return: Result of the script, if any.
+        :rtype: dict
+        :raise arango.exceptions.FoxxScriptRunError: If script fails.
+        """
+        request = Request(
+            method='post',
+            endpoint='/_api/foxx/scripts/{}'.format(name),
+            params={'mount': mount},
+            data=arg or {}
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise FoxxScriptRunError(resp)
+            return resp.body
+
+        return self._execute(request, response_handler)
+
+    def run_tests(self,
+                  mount,
+                  reporter='default',
+                  idiomatic=None,
+                  output_format=None):
+        """Run service tests.
+
+        :param mount: Service mount path (e.g "/_admin/aardvark").
+        :type mount: str | unicode
+        :param reporter: Supported reporters are:
+
+            .. code-block:: none
+
+                "default" : Simple list of test cases.
+
+                "suite"   : Object of test cases nested in suites.
+
+                "stream"  : Raw stream of test results.
+
+                "xunit"   : XUnit/JUnit compatible structure.
+
+                "tap"     : Raw TAP compatible stream.
+
+        :type reporter: str | unicode
+        :param idiomatic: Use the matching format for the reporter, regardless
+            of the value of parameter **output_format**.
+        :type: bool
+        :param output_format: Used to further control the result where allowed
+            values are "x-ldjson", "xml" and "text". When using the "stream"
+            reporter, setting this to "x-ldjson" returns newline-delimited
+            JSON stream. When using the "tap" reporter, setting this to "text"
+            returns plain text tap report. When using the "xunit" reporter,
+            settings this to "xml" returns an XML instead of JSONML.
+        :type output_format:
+        :return: Reporter output (e.g. raw JSON string, XML, plain text).
+        :rtype: str | unicode
+        :raise arango.exceptions.FoxxTestRunError: If operation fails.
+        """
+        params = {'mount': mount, 'reporter': reporter}
+        if idiomatic is not None:
+            params['idiomatic'] = idiomatic
+
+        headers = {}
+        if output_format == 'x-ldjson':
+            headers['Accept'] = 'application/x-ldjson'
+        elif output_format == 'xml':
+            headers['Accept'] = 'application/xml'
+        elif output_format == 'text':
+            headers['Accept'] = 'text/plain'
+
+        request = Request(
+            method='post',
+            endpoint='/_api/foxx/tests',
+            params=params,
+            headers=headers
+        )
+
+        def response_handler(resp):
+            if not resp.is_success:
+                raise FoxxTestRunError(resp)
+            return resp.raw_body
 
         return self._execute(request, response_handler)

@@ -1,5 +1,7 @@
 from __future__ import absolute_import, unicode_literals
 
+__all__ = ['Connection']
+
 import requests
 
 from arango.response import Response
@@ -9,17 +11,13 @@ class Connection(object):
     """HTTP connection to a specific ArangoDB database.
 
     :param url: ArangoDB URL.
-    :type url: str or unicode
-    :param host: ArangoDB server host (default: "127.0.0.1").
-    :type host: str or unicode
-    :param port: ArangoDB server port (default: 8529).
-    :type port: int
+    :type url: str | unicode
     :param db: ArangoDB database.
-    :type db: str or unicode
+    :type db: str | unicode
     :param username: ArangoDB username.
-    :type username: str or unicode
+    :type username: str | unicode
     :param password: ArangoDB password.
-    :type password: str or unicode
+    :type password: str | unicode
     :param session: Custom requests session object. If not provided, session
         with default settings (i.e. requests.Session()) is used.
     :type session: requests.Session
@@ -30,7 +28,7 @@ class Connection(object):
 
     def __init__(self, url, db, username, password, session, request_kwargs):
         self._url_prefix = '{}/_db/{}'.format(url, db)
-        self._database = db
+        self._db_name = db
         self._username = username
         self._auth = (username, password)
         self._session = session
@@ -41,27 +39,27 @@ class Connection(object):
         """Return the ArangoDB URL prefix.
 
         :returns: ArangoDB URL prefix.
-        :rtype: str or unicode
+        :rtype: str | unicode
         """
         return self._url_prefix
 
     @property
     def username(self):
-        """Return the ArangoDB username.
+        """Return the username.
 
-        :returns: ArangoDB username.
-        :rtype: str or unicode
+        :returns: Username.
+        :rtype: str | unicode
         """
         return self._username
 
     @property
-    def database(self):
-        """Return the ArangoDB database.
+    def db_name(self):
+        """Return the database name.
 
-        :returns: ArangoDB database.
-        :rtype: str or unicode
+        :returns: Database name.
+        :rtype: str | unicode
         """
-        return self._database
+        return self._db_name
 
     def send_request(self, request):
         """Send an HTTP request to ArangoDB server.
@@ -71,9 +69,6 @@ class Connection(object):
         :return: HTTP response.
         :rtype: arango.response.BaseResponse
         """
-        request.headers['content-type'] = 'application/json; charset=utf-8'
-        request.headers['x-content-type-options'] = 'nosniff'
-
         response = self._session.request(
             method=request.method,
             url=self._url_prefix + request.endpoint,

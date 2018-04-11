@@ -1,6 +1,5 @@
 from __future__ import absolute_import, unicode_literals
 
-import pytest
 from six import string_types
 
 from arango.exceptions import (
@@ -9,39 +8,17 @@ from arango.exceptions import (
     TaskGetError,
     TaskListError
 )
-from tests.utils import (
+from tests.helpers import (
+    assert_raises,
+    extract,
+    generate_task_id,
     generate_task_name,
-    generate_task_id
 )
 
-test_command = 'require("@arangodb").print(params);'
 
+def test_task_management(db, bad_db):
+    test_command = 'require("@arangodb").print(params);'
 
-def test_task_list(db, bad_db):
-    for task in db.tasks():
-        assert task['database'] in db.databases()
-        assert task['type'] in {'periodic', 'timed'}
-        assert isinstance(task['id'], string_types)
-        assert isinstance(task['name'], string_types)
-        assert isinstance(task['created'], float)
-        assert isinstance(task['command'], string_types)
-
-    with pytest.raises(TaskListError):
-        bad_db.tasks()
-
-
-def test_task_get(db):
-    # Test get existing tasks
-    for task in db.tasks():
-        assert db.task(task['id']) == task
-
-    # Test get missing task
-    with pytest.raises(TaskGetError) as err:
-        db.task(generate_task_id())
-    assert err.value.http_code == 404
-
-
-def test_task_create(db):
     # Test create task with random ID
     task_name = generate_task_name()
     new_task = db.create_task(
@@ -56,6 +33,8 @@ def test_task_create(db):
     assert new_task['database'] == db.name
     assert isinstance(new_task['created'], float)
     assert isinstance(new_task['id'], string_types)
+
+    # Test get existing task
     assert db.task(new_task['id']) == new_task
 
     # Test create task with specific ID
@@ -78,38 +57,44 @@ def test_task_create(db):
     assert db.task(new_task['id']) == new_task
 
     # Test create duplicate task
-    with pytest.raises(TaskCreateError) as err:
+    with assert_raises(TaskCreateError) as err:
         db.create_task(
             name=task_name,
             command=test_command,
             params={'foo': 1, 'bar': 2},
             task_id=task_id
         )
-    assert err.value.http_code == 409
+    assert err.value.error_code == 1851
 
+    # Test list tasks
+    for task in db.tasks():
+        assert task['database'] in db.databases()
+        assert task['type'] in {'periodic', 'timed'}
+        assert isinstance(task['id'], string_types)
+        assert isinstance(task['name'], string_types)
+        assert isinstance(task['created'], float)
+        assert isinstance(task['command'], string_types)
 
-def test_task_delete(db):
-    # Set up a test task to delete
-    task_name = generate_task_name()
-    task_id = generate_task_id()
-    db.create_task(
-        name=task_name,
-        command=test_command,
-        params={'foo': 1, 'bar': 2},
-        task_id=task_id,
-        period=10
-    )
+    # Test list tasks with bad database
+    with assert_raises(TaskListError) as err:
+        bad_db.tasks()
+    assert err.value.error_code == 1228
+
+    # Test get missing task
+    with assert_raises(TaskGetError) as err:
+        db.task(generate_task_id())
+    assert err.value.error_code == 1852
 
     # Test delete existing task
+    assert task_id in extract('id', db.tasks())
     assert db.delete_task(task_id) is True
-    with pytest.raises(TaskGetError) as err:
+    assert task_id not in extract('id', db.tasks())
+    with assert_raises(TaskGetError) as err:
         db.task(task_id)
-    assert err.value.http_code == 404
+    assert err.value.error_code == 1852
 
-    # Test delete missing task without ignore_missing
-    with pytest.raises(TaskDeleteError) as err:
-        db.delete_task(task_id, ignore_missing=False)
-    assert err.value.http_code == 404
-
-    # Test delete missing task with ignore_missing
+    # Test delete missing task
+    with assert_raises(TaskDeleteError) as err:
+        db.delete_task(generate_task_id(), ignore_missing=False)
+    assert err.value.error_code == 1852
     assert db.delete_task(task_id, ignore_missing=True) is False

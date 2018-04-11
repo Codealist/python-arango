@@ -7,7 +7,7 @@ from arango.exceptions import (
     CursorCloseError
 )
 
-from tests.utils import clean
+from tests.helpers import clean_doc
 
 
 @pytest.fixture(autouse=True)
@@ -15,7 +15,7 @@ def setup_collection(col, docs):
     col.import_bulk(docs)
 
 
-def test_cursor_read_query(db, col, docs):
+def test_cursor_from_execute_query(db, col, docs):
     cursor = db.aql.execute(
         'FOR d IN {} SORT d._key RETURN d'.format(col.name),
         count=True,
@@ -31,7 +31,7 @@ def test_cursor_read_query(db, col, docs):
     assert cursor.cached is False
     assert cursor.warnings == []
     assert cursor.count == len(cursor) == 6
-    assert clean(cursor.batch) == docs[:2]
+    assert clean_doc(cursor.batch) == docs[:2]
 
     statistics = cursor.statistics
     assert statistics['modified'] == 0
@@ -47,7 +47,7 @@ def test_cursor_read_query(db, col, docs):
     assert profile['initializing'] > 0
     assert profile['parsing'] > 0
 
-    assert clean(cursor.next()) == docs[0]
+    assert clean_doc(cursor.next()) == docs[0]
     assert cursor.id == cursor_id
     assert cursor.has_more is True
     assert cursor.cached is False
@@ -55,9 +55,9 @@ def test_cursor_read_query(db, col, docs):
     assert cursor.profile == profile
     assert cursor.warnings == []
     assert cursor.count == len(cursor) == 6
-    assert clean(cursor.batch) == [docs[1]]
+    assert clean_doc(cursor.batch) == [docs[1]]
 
-    assert clean(cursor.next()) == docs[1]
+    assert clean_doc(cursor.next()) == docs[1]
     assert cursor.id == cursor_id
     assert cursor.has_more is True
     assert cursor.cached is False
@@ -65,9 +65,9 @@ def test_cursor_read_query(db, col, docs):
     assert cursor.profile == profile
     assert cursor.warnings == []
     assert cursor.count == len(cursor) == 6
-    assert clean(cursor.batch) == []
+    assert clean_doc(cursor.batch) == []
 
-    assert clean(cursor.next()) == docs[2]
+    assert clean_doc(cursor.next()) == docs[2]
     assert cursor.id == cursor_id
     assert cursor.has_more is True
     assert cursor.cached is False
@@ -75,18 +75,18 @@ def test_cursor_read_query(db, col, docs):
     assert cursor.profile == profile
     assert cursor.warnings == []
     assert cursor.count == len(cursor) == 6
-    assert clean(cursor.batch) == [docs[3]]
+    assert clean_doc(cursor.batch) == [docs[3]]
 
-    assert clean(cursor.next()) == docs[3]
-    assert clean(cursor.next()) == docs[4]
-    assert clean(cursor.next()) == docs[5]
+    assert clean_doc(cursor.next()) == docs[3]
+    assert clean_doc(cursor.next()) == docs[4]
+    assert clean_doc(cursor.next()) == docs[5]
     assert cursor.id == cursor_id
     assert cursor.has_more is False
     assert cursor.statistics == statistics
     assert cursor.profile == profile
     assert cursor.warnings == []
     assert cursor.count == len(cursor) == 6
-    assert clean(cursor.batch) == []
+    assert clean_doc(cursor.batch) == []
     with pytest.raises(StopIteration):
         cursor.next()
     assert cursor.close(ignore_missing=True) is False
@@ -112,7 +112,7 @@ def test_cursor_write_query(db, col, docs):
     assert cursor.cached is False
     assert cursor.warnings == []
     assert cursor.count == len(cursor) == 2
-    assert clean(cursor.batch) == [docs[0]]
+    assert clean_doc(cursor.batch) == [docs[0]]
 
     statistics = cursor.statistics
     assert statistics['modified'] == 2
@@ -128,7 +128,7 @@ def test_cursor_write_query(db, col, docs):
     assert profile['initializing'] > 0
     assert profile['parsing'] > 0
 
-    assert clean(cursor.next()) == docs[0]
+    assert clean_doc(cursor.next()) == docs[0]
     assert cursor.id == cursor_id
     assert cursor.has_more is True
     assert cursor.cached is False
@@ -136,9 +136,9 @@ def test_cursor_write_query(db, col, docs):
     assert cursor.profile == profile
     assert cursor.warnings == []
     assert cursor.count == len(cursor) == 2
-    assert clean(cursor.batch) == []
+    assert clean_doc(cursor.batch) == []
 
-    assert clean(cursor.next()) == docs[1]
+    assert clean_doc(cursor.next()) == docs[1]
     assert cursor.id == cursor_id
     assert cursor.has_more is False
     assert cursor.cached is False
@@ -146,10 +146,11 @@ def test_cursor_write_query(db, col, docs):
     assert cursor.profile == profile
     assert cursor.warnings == []
     assert cursor.count == len(cursor) == 2
-    assert clean(cursor.batch) == []
+    assert clean_doc(cursor.batch) == []
 
-    with pytest.raises(CursorCloseError):
+    with pytest.raises(CursorCloseError) as err:
         cursor.close(ignore_missing=False)
+    assert err.value.error_code == 1600
     assert cursor.close(ignore_missing=True) is False
 
 
@@ -164,15 +165,17 @@ def test_cursor_bad_state(db, col):
     )
     setattr(cursor, '_id', 'invalid_id')
 
-    with pytest.raises(CursorNextError):
+    with pytest.raises(CursorNextError) as err:
         list(cursor)
+    assert err.value.error_code == 1600
 
-    with pytest.raises(CursorCloseError):
+    with pytest.raises(CursorCloseError) as err:
         cursor.close(ignore_missing=False)
+    assert err.value.error_code == 1600
     assert cursor.close(ignore_missing=True) is False
 
 
-def test_cursor_early_close(db, col, docs):
+def test_cursor_premature_close(db, col, docs):
     cursor = db.aql.execute(
         'FOR d IN {} SORT d._key RETURN d'.format(col.name),
         count=True,
@@ -181,10 +184,11 @@ def test_cursor_early_close(db, col, docs):
         optimizer_rules=['+all'],
         profile=True
     )
-    assert clean(cursor.batch) == docs[:2]
+    assert clean_doc(cursor.batch) == docs[:2]
     assert cursor.close() is True
-    with pytest.raises(CursorCloseError):
+    with pytest.raises(CursorCloseError) as err:
         cursor.close(ignore_missing=False)
+    assert err.value.error_code == 1600
     assert cursor.close(ignore_missing=True) is False
 
 
@@ -197,8 +201,9 @@ def test_cursor_context_manager(db, col, docs):
         optimizer_rules=['+all'],
         profile=True
     ) as cursor:
-        assert clean(cursor.next()) == docs[0]
+        assert clean_doc(cursor.next()) == docs[0]
 
-    with pytest.raises(CursorCloseError):
+    with pytest.raises(CursorCloseError) as err:
         cursor.close(ignore_missing=False)
+    assert err.value.error_code == 1600
     assert cursor.close(ignore_missing=True) is False

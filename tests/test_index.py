@@ -1,13 +1,12 @@
 from __future__ import absolute_import, unicode_literals
 
-import pytest
-
 from arango.exceptions import (
     IndexListError,
     IndexCreateError,
-    IndexDeleteError
+    IndexDeleteError,
+    IndexLoadError
 )
-from tests.utils import extract
+from tests.helpers import assert_raises, extract
 
 
 def test_list_indexes(col, bad_col):
@@ -23,8 +22,9 @@ def test_list_indexes(col, bad_col):
     assert isinstance(indexes, list)
     assert expected_index in indexes
 
-    with pytest.raises(IndexListError):
+    with assert_raises(IndexListError) as err:
         bad_col.indexes()
+    assert err.value.error_code == 1228
 
 
 def test_add_hash_index(col):
@@ -116,8 +116,9 @@ def test_add_geo_index(col):
     assert result in col.indexes()
 
     # Test add geo index with more than two attributes (should fail)
-    with pytest.raises(IndexCreateError):
+    with assert_raises(IndexCreateError) as err:
         col.add_geo_index(fields=['attr1', 'attr2', 'attr3'])
+    assert err.value.error_code == 10
 
 
 def test_add_fulltext_index(col):
@@ -140,8 +141,9 @@ def test_add_fulltext_index(col):
     assert result in col.indexes()
 
     # Test add fulltext index with two attributes (should fail)
-    with pytest.raises(IndexCreateError):
+    with assert_raises(IndexCreateError) as err:
         col.add_fulltext_index(fields=['attr1', 'attr2'])
+    assert err.value.error_code == 10
 
 
 def test_add_persistent_index(col):
@@ -184,10 +186,22 @@ def test_delete_index(col, bad_col):
     for index_id in indexes_to_delete:
         assert col.delete_index(index_id, ignore_missing=True) is False
     for index_id in indexes_to_delete:
-        with pytest.raises(IndexDeleteError):
+        with assert_raises(IndexDeleteError) as err:
             col.delete_index(index_id, ignore_missing=False)
+        assert err.value.error_code == 1212
 
-    # Test delete indexes in missing collection
+    # Test delete indexes with bad collection
     for index_id in indexes_to_delete:
-        with pytest.raises(IndexDeleteError):
+        with assert_raises(IndexDeleteError) as err:
             bad_col.delete_index(index_id, ignore_missing=False)
+        assert err.value.error_code == 1228
+
+
+def test_load_indexes(col, bad_col):
+    # Test load indexes
+    assert col.load_indexes() is True
+
+    # Test load indexes with bad collection
+    with assert_raises(IndexLoadError) as err:
+        bad_col.load_indexes()
+    assert err.value.error_code == 1228

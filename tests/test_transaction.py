@@ -1,215 +1,179 @@
 from __future__ import absolute_import, unicode_literals
 
 import pytest
+from six import string_types
 
-from arango.database import Database
+from arango.database import TransactionDatabase
 from arango.exceptions import (
-    TransactionBadStateError,
+    TransactionStateError,
     TransactionExecuteError,
     TransactionJobResultError
 )
-from arango.utils import is_str
-from tests.utils import clean, extract
+from arango.job import TransactionJob
+from tests.helpers import clean_doc, extract, generate_string
 
 
 # noinspection PyUnresolvedReferences
-def test_transaction_attributes(db, col, docs):
-    with db.begin_transaction() as txn:
-        assert is_str(txn.id)
-        assert isinstance(txn.db, Database)
-        assert txn.db.context == 'transaction'
-        assert txn.jobs == []
-        assert txn.status == 'pending'
-        job = txn.db.collection(col.name).insert_many(docs)
+def test_transaction_wrapper_attributes(db, col, username):
+    txn_db = db.begin_transaction(timeout=100, sync=True)
+    assert txn_db._executor._sync is True
+    assert txn_db._executor._timeout == 100
+    assert isinstance(txn_db, TransactionDatabase)
+    assert txn_db.username == username
+    assert txn_db.context == 'transaction'
+    assert txn_db.db_name == db.name
+    assert txn_db.name == db.name
+    assert repr(txn_db) == '<TransactionDatabase {}>'.format(db.name)
 
-    assert txn.jobs == [job]
-    assert txn.status == 'done'
-    assert '<Transaction {}>'.format(txn.id) == repr(txn)
-    assert '<TransactionJob {}>'.format(job.id) == repr(job)
-    assert extract('_key', col.all()) == extract('_key', docs)
+    txn_col = txn_db.collection(col.name)
+    assert txn_col.username == username
+    assert txn_col.context == 'transaction'
+    assert txn_col.db_name == db.name
+    assert txn_col.name == col.name
 
+    txn_aql = txn_db.aql
+    assert txn_aql.username == username
+    assert txn_aql.context == 'transaction'
+    assert txn_aql.db_name == db.name
 
-def test_transaction_execute_with_result(sys_db, db, col, docs):
-    # Test DB level API methods
-    with sys_db.begin_transaction(return_result=True) as txn:
-        job01 = txn.db.engine()
-        job02 = txn.db.version()
-        job03 = txn.db.details()
-        job04 = txn.db.databases()
+    job = txn_col.get(generate_string())
+    assert isinstance(job, TransactionJob)
+    assert isinstance(job.id, string_types)
+    assert repr(job) == '<TransactionJob {}>'.format(job.id)
 
-    assert job01.result() == sys_db.engine()
-    assert job02.result() == sys_db.version()
-    assert set(job03.result()).issubset(set(sys_db.details()))
-    assert set(job04.result()) == set(sys_db.databases())
-
-    # Test collection level API methods
-    with db.begin_transaction(return_result=True) as txn:
-        txn_col = txn.db.collection(col.name)
-        job01 = txn_col.properties()
-        job02 = txn_col.statistics()
-        job03 = txn_col.revision()
-        job04 = txn_col.checksum()
-        job05 = txn_col.unload()
-        job06 = txn_col.load()
-
-    assert set(job01.result()).issubset(set(col.properties()))
-    assert set(job02.result()).issubset(set(col.statistics()))
-    assert is_str(job03.result())  # TODO returning wrong revision
-    assert job04.result() == col.checksum()
-    assert job05.result() is True
-    assert job06.result() is True
-
-    # Test document level API methods
-    with db.begin_transaction(return_result=True) as txn:
-        txn_col = txn.db.collection(col.name)
-        job01 = txn_col.insert_many(docs, sync=True)
-        job02 = txn_col.count()
-        job03 = txn_col.ids()
-        job04 = txn_col.keys()
-        job05 = txn_col.has(docs[0])
-        job06 = txn_col.get(docs[0])
-        job07 = txn_col.get_many(docs)
-        job08 = txn_col.find({'text': 'foo'}, offset=1, limit=1)
-        job09 = txn_col.all(skip=4, limit=3)
-        job10 = txn_col.random()
-
-        new_docs = [{'_key': d['_key'], 'a': 1} for d in docs]
-        job11 = txn_col.update_many(new_docs, return_new=True)
-        job12 = txn_col.update_match({'a': 1}, {'a': 2})
-
-        new_docs = [{'_key': d['_key'], 'a': 3} for d in docs]
-        job13 = txn_col.replace_many(new_docs, return_new=True)
-        job14 = txn_col.replace_match({'a': 3}, {'a': 4})
-
-        job15 = txn_col.delete_many(['1', '2'], return_old=True)
-        job16 = txn_col.count()
-        job17 = txn_col.delete_match({'a': 4})
-        job18 = txn_col.count()
-
-        doc = docs[0].copy()
-        job19 = txn_col.insert(doc, return_new=True)
-        doc['a'] = 1
-        job20 = txn_col.update(doc, return_new=True)
-        doc['a'] = 2
-        job21 = txn_col.replace(doc, return_new=True)
-        job22 = txn_col.delete(doc, return_old=True)
-        job23 = txn_col.count()
-
-    assert extract('_key', job01.result()) == extract('_key', docs)
-    assert job02.result() == len(docs)
-    col_ids = ['{}/{}'.format(col.name, doc['_key']) for doc in docs]
-    assert sorted(job03.result()) == sorted(col_ids)
-    assert sorted(job04.result()) == extract('_key', docs)
-    assert job05.result() is True
-    assert clean(job06.result()) == clean(docs[0])
-    assert clean(job07.result()) == clean(docs)
-    assert len(job08.result()) == 1
-    assert len(job09.result()) == 2
-    assert clean(job10.result()) in clean(docs)
-    assert all(d['new']['a'] == 1 for d in job11.result())
-    assert job12.result() == len(docs)
-    assert all(d['new']['a'] == 3 for d in job13.result())
-    assert job14.result() == len(docs)
-    assert extract('_key', job15.result()) == ['1', '2']
-    assert job16.result() == 4
-    assert job17.result() == 4
-    assert job18.result() == 0
-    assert 'a' not in job19.result()['new']
-    assert job20.result()['new']['a'] == 1
-    assert job21.result()['new']['a'] == 2
-    assert job22.result()['old']['a'] == 2
-    assert job23.result() == 0
-
-    # Test vertex level API methods
-    with db.begin_transaction(return_result=True) as txn:
-        pass
 
 def test_transaction_execute_without_result(db, col, docs):
-    with db.begin_transaction(return_result=False) as txn:
-        txn_col = txn.db.collection(col.name)
+    with db.begin_transaction(return_result=False) as txn_db:
+        txn_col = txn_db.collection(col.name)
+
+        # Ensure that no jobs are returned
         assert txn_col.insert(docs[0]) is None
         assert txn_col.delete(docs[0]) is None
         assert txn_col.insert(docs[1]) is None
         assert txn_col.delete(docs[1]) is None
         assert txn_col.insert(docs[2]) is None
+        assert txn_col.get(docs[2]) is None
+        assert txn_db.queued_jobs() is None
 
-    assert txn.jobs is None
-    assert txn.status == 'done'
-    assert extract('_key', col.all()) == extract('_key', [docs[2]])
+    # Ensure that the operations went through
+    assert txn_db.queued_jobs() is None
+    assert extract('_key', col.all()) == [docs[2]['_key']]
+
+
+def test_transaction_execute_with_result(db, col, docs):
+    with db.begin_transaction(return_result=True) as txn_db:
+        txn_col = txn_db.collection(col.name)
+        job1 = txn_col.insert(docs[0])
+        job2 = txn_col.insert(docs[1])
+        job3 = txn_col.get(docs[1])
+        jobs = txn_db.queued_jobs()
+        assert jobs == [job1, job2, job3]
+        assert all(job.status() == 'pending' for job in jobs)
+
+    assert txn_db.queued_jobs() == [job1, job2, job3]
+    assert all(job.status() == 'done' for job in txn_db.queued_jobs())
+    assert extract('_key', col.all()) == extract('_key', docs[:2])
+
+    # Test successful results
+    assert job1.result()['_key'] == docs[0]['_key']
+    assert job2.result()['_key'] == docs[1]['_key']
+    assert job3.result()['_key'] == docs[1]['_key']
+
+
+def test_transaction_execute_error_in_result(db, col, docs):
+    txn_db = db.begin_transaction(timeout=100, sync=True)
+    txn_col = txn_db.collection(col.name)
+    job1 = txn_col.insert(docs[0])
+    job2 = txn_col.insert(docs[1])
+    job3 = txn_col.insert(docs[1])  # duplicate
+
+    with pytest.raises(TransactionExecuteError) as err:
+        txn_db.commit()
+    assert err.value.error_code == 1210
+
+    jobs = [job1, job2, job3]
+    assert txn_db.queued_jobs() == jobs
+    assert all(job.status() == 'pending' for job in jobs)
 
 
 def test_transaction_empty_commit(db):
-    txn = db.begin_transaction()
-    assert txn.status == 'pending'
+    txn_db = db.begin_transaction(return_result=True)
+    assert list(txn_db.commit()) == []
 
-    assert list(txn.commit()) == []
-    assert txn.status == 'done'
+    txn_db = db.begin_transaction(return_result=False)
+    assert txn_db.commit() is None
 
 
-def test_transaction_double_commit(db, col):
-    txn = db.begin_transaction()
-    txn.db.collection(col.name).insert({})
-    assert txn.status == 'pending'
+def test_transaction_double_commit(db, col, docs):
+    txn_db = db.begin_transaction()
+    job = txn_db.collection(col.name).insert(docs[0])
 
     # Test first commit
-    txn.commit()
-    assert txn.status == 'done'
+    assert txn_db.commit() == [job]
+    assert job.status() == 'done'
     assert len(col) == 1
-    random_doc = col.random()
+    assert clean_doc(col.random()) == docs[0]
 
     # Test second commit which should fail
-    with pytest.raises(TransactionBadStateError) as err:
-        txn.commit()
-    assert txn.status == 'done'
+    with pytest.raises(TransactionStateError) as err:
+        txn_db.commit()
+    assert 'already committed' in str(err.value)
+    assert job.status() == 'done'
     assert len(col) == 1
-    assert col.random() == random_doc
-    assert 'committed already' in str(err.value)
+    assert clean_doc(col.random()) == docs[0]
 
 
 def test_transaction_action_after_commit(db, col):
-    with db.begin_transaction() as transaction:
-        transaction.db.collection(col.name).insert({})
+    with db.begin_transaction() as txn_db:
+        txn_db.collection(col.name).insert({})
 
     # Test insert after the transaction has been committed
-    with pytest.raises(TransactionBadStateError) as err:
-        transaction.db.collection(col.name).insert({})
-    assert 'committed already' in str(err.value)
+    with pytest.raises(TransactionStateError) as err:
+        txn_db.collection(col.name).insert({})
+    assert 'already committed' in str(err.value)
     assert len(col) == 1
-    assert transaction.status == 'done'
+
+
+def test_transaction_method_not_allowed(db):
+    with pytest.raises(TransactionStateError) as err:
+        txn_db = db.begin_transaction()
+        txn_db.aql.functions()
+    assert str(err.value) == 'action not allowed in transaction'
+
+    with pytest.raises(TransactionStateError) as err:
+        with db.begin_transaction() as txn_db:
+            txn_db.aql.functions()
+    assert str(err.value) == 'action not allowed in transaction'
 
 
 def test_transaction_execute_error(bad_db, col, docs):
-    transaction = bad_db.begin_transaction(return_result=True)
-    transaction.db.collection(col.name).insert_many(docs)
-    assert transaction.status == 'pending'
+    txn_db = bad_db.begin_transaction(return_result=True)
+    job = txn_db.collection(col.name).insert_many(docs)
 
-    # Test transaction execute with bad credentials
+    # Test transaction execute with bad database
     with pytest.raises(TransactionExecuteError):
-        transaction.commit()
+        txn_db.commit()
     assert len(col) == 0
-    assert transaction.status == 'done'
+    assert job.status() == 'pending'
 
 
 def test_transaction_job_result_not_ready(db, col, docs):
-    transaction = db.begin_transaction(return_result=True)
-    job = transaction.db.collection(col.name).insert_many(docs)
-    assert transaction.status == 'pending'
+    txn_db = db.begin_transaction(return_result=True)
+    job = txn_db.collection(col.name).insert_many(docs)
 
-    # Test get job result before commit with raise_errors set to True
-    with pytest.raises(TransactionJobResultError):
-        job.result(raise_errors=True)
-
-    # Test get job result before commit with raise_errors set to False
-    with pytest.raises(TransactionJobResultError):
-        job.result(raise_errors=False)
+    # Test get job result before commit
+    with pytest.raises(TransactionJobResultError) as err:
+        job.result()
+    assert str(err.value) == 'result not available yet'
 
     # Test commit to make sure it still works after the errors
-    assert list(transaction.commit()) == [job]
+    assert list(txn_db.commit()) == [job]
     assert len(job.result()) == len(docs)
     assert extract('_key', col.all()) == extract('_key', docs)
 
 
 def test_transaction_execute_raw(db, col, docs):
+    # Test execute raw transaction
     doc = docs[0]
     key = doc['_key']
     result = db.execute_transaction(
@@ -227,8 +191,13 @@ def test_transaction_execute_raw(db, col, docs):
         timeout=1000,
         max_size=100000,
         allow_implicit=True,
-        autocommit_ops=10,
-        autocommit_size=10000
+        intermediate_commit_count=10,
+        intermediate_commit_size=10000
     )
     assert result is True
     assert doc in col and col[key]['val'] == 1
+
+    # Test execute invalid transaction
+    with pytest.raises(TransactionExecuteError) as err:
+        db.execute_transaction(command='INVALID COMMAND')
+    assert err.value.error_code == 10
